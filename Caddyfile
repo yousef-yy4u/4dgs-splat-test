@@ -1,0 +1,7 @@
+# Railway injects $PORT and Caddy serves on it. Falls back to 8080 locally.
+# (Do NOT use 2019 — that's Caddy's internal admin API, not the site.)
+:{$PORT:8080} {
+	root * /srv
+	file_server
+	encode gzip
+}

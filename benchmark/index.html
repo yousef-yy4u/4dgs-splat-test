@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>4dgs Splat Render Benchmark</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#eee}
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #ui{position:fixed;top:0;left:0;right:0;padding:10px;background:rgba(0,0,0,.55);
+      font-size:13px;line-height:1.5;backdrop-filter:blur(4px);max-height:46vh;overflow:auto}
+  #ui b{color:#7ad}
+  .row{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;align-items:center}
+  button{background:#234;color:#cde;border:1px solid #456;border-radius:6px;padding:6px 9px;font-size:13px}
+  button.on{background:#2a6;color:#000;border-color:#2a6}
+  #stats{font-variant-numeric:tabular-nums;white-space:pre-wrap}
+  #err{color:#f77;white-space:pre-wrap}
+  input[type=range]{vertical-align:middle}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div><b>4dgs splat render benchmark</b> — measures how many gaussian splats this device draws at framerate.</div>
+  <div class="row">Splats:
+    <span id="counts"></span>
+  </div>
+  <div class="row">
+    Splat size <input id="size" type="range" min="0.3" max="4" step="0.1" value="1.2">
+    <button id="stereo">Stereo: OFF</button>
+    <button id="run">Start 5-min run</button>
+    <button id="csv">Export CSV</button>
+  </div>
+  <div id="stats">initializing…</div>
+  <div id="err"></div>
+</div>
+<script>
+"use strict";
+const COUNTS = [25000,50000,100000,200000,350000,500000,750000,1000000];
+let splatCount = 100000;
+let sizeScale = 1.2;
+let stereo = false;
+
+const cv = document.getElementById('gl');
+const statsEl = document.getElementById('stats');
+const errEl = document.getElementById('err');
+function fail(m){ errEl.textContent += m + "\n"; console.error(m); }
+
+const gl = cv.getContext('webgl2', {antialias:false, alpha:false, premultipliedAlpha:false});
+if(!gl){ fail("WebGL2 not available in this browser. (iOS: needs Safari 15+.)"); }
+
+// ---- shaders ----
+const VERT = `#version 300 es
+precision highp float;
+layout(location=0) in vec2 a_corner;
+layout(location=1) in vec3 a_center;
+layout(location=2) in float a_size;
+layout(location=3) in vec3 a_color;
+uniform mat4 u_viewProj;
+uniform mat4 u_view;
+uniform vec2 u_viewport;
+uniform float u_focal;
+uniform float u_sizeScale;
+out vec2 v_corner;
+out vec3 v_color;
+void main(){
+  vec4 vp = u_view * vec4(a_center,1.0);
+  float depth = -vp.z;
+  if(depth <= 0.02){ gl_Position = vec4(2.0,2.0,2.0,1.0); return; }
+  vec4 clip = u_viewProj * vec4(a_center,1.0);
+  float pix = u_sizeScale * a_size * u_focal / depth;
+  pix = clamp(pix, 1.0, 350.0);
+  vec2 ndc = a_corner * pix / (0.5*u_viewport);
+  clip.xy += ndc * clip.w;
+  gl_Position = clip;
+  v_corner = a_corner;
+  v_color = a_color;
+}`;
+const FRAG = `#version 300 es
+precision highp float;
+in vec2 v_corner;
+in vec3 v_color;
+out vec4 frag;
+void main(){
+  float d2 = dot(v_corner, v_corner);
+  if(d2 > 1.0) discard;
+  float a = exp(-4.0 * d2) * 0.9;
+  frag = vec4(v_color * a, a);
+}`;
+
+function sh(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){ fail("shader: "+gl.getShaderInfoLog(s)); } return s; }
+let prog=null, uViewProj,uView,uViewport,uFocal,uSizeScale;
+if(gl){
+  prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER,VERT));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER,FRAG));
+  gl.linkProgram(prog);
+  if(!gl.getProgramParameter(prog,gl.LINK_STATUS)){ fail("link: "+gl.getProgramInfoLog(prog)); }
+  uViewProj=gl.getUniformLocation(prog,'u_viewProj');
+  uView=gl.getUniformLocation(prog,'u_view');
+  uViewport=gl.getUniformLocation(prog,'u_viewport');
+  uFocal=gl.getUniformLocation(prog,'u_focal');
+  uSizeScale=gl.getUniformLocation(prog,'u_sizeScale');
+}
+
+// ---- geometry: one quad, N instances ----
+let vao=null, instCenter=null, instSize=null, instColor=null;
+const cornerBuf = gl ? gl.createBuffer() : null;
+if(gl){
+  gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+}
+function buildSplats(n){
+  if(!gl) return;
+  if(vao) gl.deleteVertexArray(vao);
+  if(instCenter) gl.deleteBuffer(instCenter);
+  if(instSize) gl.deleteBuffer(instSize);
+  if(instColor) gl.deleteBuffer(instColor);
+  const cen=new Float32Array(n*3), siz=new Float32Array(n), col=new Float32Array(n*3);
+  for(let i=0;i<n;i++){
+    // random point in a ~unit sphere shell to mimic an object surface
+    let x,y,z,r2;
+    do{ x=Math.random()*2-1; y=Math.random()*2-1; z=Math.random()*2-1; r2=x*x+y*y+z*z; }while(r2>1||r2<0.02);
+    const r=Math.cbrt(Math.random())*0.15+0.92; const inv=r/Math.sqrt(r2);
+    cen[i*3]=x*inv; cen[i*3+1]=y*inv; cen[i*3+2]=z*inv;
+    siz[i]=0.004+Math.random()*0.010;
+    col[i*3]=0.3+0.7*Math.random(); col[i*3+1]=0.3+0.7*Math.random(); col[i*3+2]=0.3+0.7*Math.random();
+  }
+  vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, cornerBuf);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  instCenter=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,instCenter);
+  gl.bufferData(gl.ARRAY_BUFFER,cen,gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1,3,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(1,1);
+  instSize=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,instSize);
+  gl.bufferData(gl.ARRAY_BUFFER,siz,gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,1,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(2,1);
+  instColor=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,instColor);
+  gl.bufferData(gl.ARRAY_BUFFER,col,gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3,3,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(3,1);
+  gl.bindVertexArray(null);
+}
+
+// ---- matrices ----
+function perspective(fovy,aspect,near,far){
+  const f=1/Math.tan(fovy/2), nf=1/(near-far);
+  return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,2*far*near*nf,0];
+}
+function mul(a,b){const o=new Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s;}return o;}
+function lookAt(ex,ey,ez,cx,cy,cz){
+  let zx=ex-cx,zy=ey-cy,zz=ez-cz; let zl=Math.hypot(zx,zy,zz); zx/=zl;zy/=zl;zz/=zl;
+  // up = (0,1,0)
+  let ux=0,uy=1,uz=0;
+  let sx=uy*zz-uz*zy, sy=uz*zx-ux*zz, sz=ux*zy-uy*zx; let sl=Math.hypot(sx,sy,sz); sx/=sl;sy/=sl;sz/=sl;
+  let tx=zy*sz-zz*sy, ty=zz*sx-zx*sz, tz=zx*sy-zy*sx;
+  return [sx,tx,zx,0, sy,ty,zy,0, sz,tz,zz,0,
+          -(sx*ex+sy*ey+sz*ez), -(tx*ex+ty*ey+tz*ez), -(zx*ex+zy*ey+zz*ez), 1];
+}
+
+// ---- render loop & stats ----
+let DPR=Math.min(window.devicePixelRatio||1, 2);
+function resize(){
+  DPR=Math.min(window.devicePixelRatio||1, 2);
+  cv.width=Math.floor(cv.clientWidth*DPR); cv.height=Math.floor(cv.clientHeight*DPR);
+}
+window.addEventListener('resize',resize);
+
+let frames=0, lastSec=performance.now(), curFps=0;
+const recent=[]; // recent frame times (ms)
+let running=false, runStart=0, runSamples=[]; // {t, fps}
+
+function drawEye(view, proj, vx,vy,vw,vh){
+  gl.viewport(vx,vy,vw,vh);
+  gl.uniformMatrix4fv(uView,false,view);
+  gl.uniformMatrix4fv(uViewProj,false,mul(proj,view));
+  const fovy=Math.PI/3;
+  gl.uniform2f(uViewport,vw,vh);
+  gl.uniform1f(uFocal, 0.5*vh/Math.tan(fovy/2));
+  gl.uniform1f(uSizeScale,sizeScale);
+  gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,4,splatCount);
+}
+
+let tPrev=performance.now();
+function frame(now){
+  if(!gl){ requestAnimationFrame(frame); return; }
+  const dt=now-tPrev; tPrev=now;
+  recent.push(dt); if(recent.length>240) recent.shift();
+  frames++;
+  if(now-lastSec>=1000){
+    curFps = frames*1000/(now-lastSec); frames=0; lastSec=now;
+    if(running){
+      runSamples.push({t:(now-runStart)/1000, fps:curFps});
+      if(now-runStart>=300000){ finishRun(); }
+    }
+    updateStats();
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+  gl.clearColor(0.02,0.02,0.04,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); // additive, order-independent
+  gl.useProgram(prog); gl.bindVertexArray(vao);
+
+  const ang=now*0.0002; const rad=3.2;
+  const ex=Math.cos(ang)*rad, ez=Math.sin(ang)*rad, ey=Math.sin(ang*0.6)*1.0;
+  const W=cv.width, H=cv.height;
+  if(stereo){
+    const halfW=Math.floor(W/2), aspect=halfW/H;
+    const proj=perspective(Math.PI/3,aspect,0.05,100);
+    const off=0.06;
+    drawEye(lookAt(ex-off,ey,ez,0,0,0),proj,0,0,halfW,H);
+    drawEye(lookAt(ex+off,ey,ez,0,0,0),proj,halfW,0,halfW,H);
+  }else{
+    const proj=perspective(Math.PI/3,W/H,0.05,100);
+    drawEye(lookAt(ex,ey,ez,0,0,0),proj,0,0,W,H);
+  }
+  gl.bindVertexArray(null);
+  requestAnimationFrame(frame);
+}
+
+function pct(arr,p){ if(!arr.length)return 0; const s=[...arr].sort((a,b)=>a-b); return s[Math.min(s.length-1,Math.floor(p*s.length))]; }
+let glRenderer="?";
+function updateStats(){
+  const ft=recent.slice(); const p50=pct(ft,0.5), p95=pct(ft,0.95);
+  let mem="n/a";
+  if(performance.memory) mem=(performance.memory.usedJSHeapSize/1048576).toFixed(0)+" MB (JS heap, Chrome only)";
+  let runline="";
+  if(running){ const el=(performance.now()-runStart)/1000; runline=`\nRUN: ${el.toFixed(0)}/300s  samples:${runSamples.length}`; }
+  statsEl.textContent =
+`splats: ${splatCount.toLocaleString()}   ${stereo?'STEREO':'mono'}   DPR:${DPR.toFixed(1)}  res:${cv.width}x${cv.height}
+FPS: ${curFps.toFixed(1)}   frame p50: ${p50.toFixed(1)}ms   p95: ${p95.toFixed(1)}ms
+GPU: ${glRenderer}
+mem: ${mem}${runline}`;
+}
+function finishRun(){
+  running=false; document.getElementById('run').classList.remove('on');
+  document.getElementById('run').textContent='Start 5-min run';
+  const all=runSamples.map(s=>s.fps);
+  const last30=runSamples.filter(s=>s.t>=270).map(s=>s.fps);
+  const med=a=>{ if(!a.length)return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
+  const verdict = v => v>=60?'🟢 GREEN':v>=30?'🟡 YELLOW':'🔴 RED';
+  const overall=med(all), tail=med(last30);
+  errEl.style.color='#9f9';
+  errEl.textContent=
+`=== RESULT  ${splatCount.toLocaleString()} splats  ${stereo?'STEREO':'mono'} ===
+sustained median FPS (5min): ${overall.toFixed(1)}   ${verdict(overall)}
+last-30s median FPS (throttle): ${tail.toFixed(1)}   ${verdict(tail)}
+throttle drop: ${(overall-tail).toFixed(1)} fps
+GPU: ${glRenderer}   res:${cv.width}x${cv.height}
+-> record this row, bump to the next splat count, run again.`;
+}
+
+// ---- UI ----
+const countsEl=document.getElementById('counts');
+COUNTS.forEach(c=>{
+  const b=document.createElement('button'); b.textContent=(c/1000)+'k';
+  if(c===splatCount) b.classList.add('on');
+  b.onclick=()=>{ splatCount=c; [...countsEl.children].forEach(x=>x.classList.remove('on')); b.classList.add('on'); buildSplats(c); errEl.textContent=''; errEl.style.color='#f77'; };
+  countsEl.appendChild(b);
+});
+document.getElementById('size').oninput=e=>{ sizeScale=parseFloat(e.target.value); };
+document.getElementById('stereo').onclick=e=>{ stereo=!stereo; e.target.textContent='Stereo: '+(stereo?'ON':'OFF'); e.target.classList.toggle('on',stereo); };
+document.getElementById('run').onclick=e=>{
+  if(running){ finishRun(); return; }
+  running=true; runStart=performance.now(); runSamples=[]; errEl.textContent='';
+  e.target.classList.add('on'); e.target.textContent='Stop run';
+};
+document.getElementById('csv').onclick=()=>{
+  let s="t_seconds,fps\n"+runSamples.map(r=>r.t.toFixed(1)+","+r.fps.toFixed(2)).join("\n");
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([s],{type:'text/csv'}));
+  a.download=`bench_${splatCount}_${stereo?'stereo':'mono'}.csv`; a.click();
+};
+
+// GPU renderer string
+if(gl){ const ext=gl.getExtension('WEBGL_debug_renderer_info');
+  if(ext) glRenderer=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL); else glRenderer=gl.getParameter(gl.RENDERER); }
+
+resize(); if(gl) buildSplats(splatCount); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
