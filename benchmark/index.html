@@ -41,7 +41,7 @@ const COUNTS = [25000,50000,100000,200000,350000,500000,750000,1000000];
 let splatCount = 100000;
 let sizeScale = 1.2;
 let stereo = false;
-let fixedRes = false; // when true, render at a fixed 1280x720 on every device for a FAIR GPU comparison
+let resMode = 'native'; // 'native' | 'fair720' (1280x720, fair GPU compare) | 'glasses' (~1200px/eye, real AR target)
 
 const cv = document.getElementById('gl');
 const statsEl = document.getElementById('stats');
@@ -162,9 +162,11 @@ function lookAt(ex,ey,ez,cx,cy,cz){
 
 // ---- render loop & stats ----
 let DPR=Math.min(window.devicePixelRatio||1, 2);
+const EYE = 1200; // glasses preset: pixels per eye
 function resize(){
   DPR=Math.min(window.devicePixelRatio||1, 2);
-  if(fixedRes){ cv.width=1280; cv.height=720; }
+  if(resMode==='fair720'){ cv.width=1280; cv.height=720; }
+  else if(resMode==='glasses'){ cv.width = stereo ? EYE*2 : EYE; cv.height = EYE; }
   else { cv.width=Math.floor(cv.clientWidth*DPR); cv.height=Math.floor(cv.clientHeight*DPR); }
 }
 window.addEventListener('resize',resize);
@@ -237,19 +239,25 @@ mem: ${mem}${runline}`;
 function finishRun(){
   running=false; document.getElementById('run').classList.remove('on');
   document.getElementById('run').textContent='Start 5-min run';
-  const all=runSamples.map(s=>s.fps);
-  const last30=runSamples.filter(s=>s.t>=270).map(s=>s.fps);
   const med=a=>{ if(!a.length)return 0; const s=[...a].sort((x,y)=>x-y); return s[Math.floor(s.length/2)]; };
   const verdict = v => v>=60?'🟢 GREEN':v>=30?'🟡 YELLOW':'🔴 RED';
-  const overall=med(all), tail=med(last30);
+  const all=runSamples.map(s=>s.fps);
+  const endT = runSamples.length ? runSamples[runSamples.length-1].t : 0;
+  const overall=med(all);
+  let throttleLine;
+  if(endT < 60){
+    throttleLine = `throttle: run too short (${endT.toFixed(0)}s) — run the FULL 5 min for the thermal check`;
+  } else {
+    const tail = med(runSamples.filter(s=>s.t>=endT-30).map(s=>s.fps));
+    throttleLine = `last-30s FPS (throttle): ${tail.toFixed(1)}  ${verdict(tail)}   drop: ${(overall-tail).toFixed(1)}`;
+  }
   errEl.style.color='#9f9';
   errEl.textContent=
-`=== RESULT  ${splatCount.toLocaleString()} splats  ${stereo?'STEREO':'mono'} ===
-sustained median FPS (5min): ${overall.toFixed(1)}   ${verdict(overall)}
-last-30s median FPS (throttle): ${tail.toFixed(1)}   ${verdict(tail)}
-throttle drop: ${(overall-tail).toFixed(1)} fps
-GPU: ${glRenderer}   res:${cv.width}x${cv.height}
--> record this row, bump to the next splat count, run again.`;
+`=== RESULT  ${splatCount.toLocaleString()} splats  ${stereo?'STEREO':'mono'}  size ${sizeScale.toFixed(1)}  res ${cv.width}x${cv.height} ===
+sustained median FPS: ${overall.toFixed(1)}   ${verdict(overall)}
+${throttleLine}
+GPU: ${glRenderer}
+-> keep SIZE fixed (default) across a count sweep; vary only count.`;
 }
 
 // ---- UI ----
@@ -261,8 +269,12 @@ COUNTS.forEach(c=>{
   countsEl.appendChild(b);
 });
 document.getElementById('size').oninput=e=>{ sizeScale=parseFloat(e.target.value); };
-document.getElementById('stereo').onclick=e=>{ stereo=!stereo; e.target.textContent='Stereo: '+(stereo?'ON':'OFF'); e.target.classList.toggle('on',stereo); };
-document.getElementById('fixedres').onclick=e=>{ fixedRes=!fixedRes; e.target.textContent='Res: '+(fixedRes?'1280x720 FIXED':'native'); e.target.classList.toggle('on',fixedRes); resize(); };
+document.getElementById('stereo').onclick=e=>{ stereo=!stereo; e.target.textContent='Stereo: '+(stereo?'ON':'OFF'); e.target.classList.toggle('on',stereo); resize(); };
+document.getElementById('fixedres').onclick=e=>{
+  resMode = resMode==='native' ? 'fair720' : resMode==='fair720' ? 'glasses' : 'native';
+  const label = resMode==='fair720' ? '720p FAIR' : resMode==='glasses' ? 'GLASSES 1200/eye' : 'native';
+  e.target.textContent='Res: '+label; e.target.classList.toggle('on', resMode!=='native'); resize();
+};
 document.getElementById('run').onclick=e=>{
   if(running){ finishRun(); return; }
   running=true; runStart=performance.now(); runSamples=[]; errEl.textContent='';
