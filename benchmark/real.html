@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>4dgs Real Asset Viewer / Benchmark</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#eee}
+  #gl{position:fixed;inset:0;width:100%;height:100%;display:block}
+  #ui{position:fixed;top:0;left:0;right:0;padding:10px;background:rgba(0,0,0,.55);font-size:13px;line-height:1.5;backdrop-filter:blur(4px);max-height:50vh;overflow:auto}
+  #ui b{color:#7ad}
+  .row{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;align-items:center}
+  button{background:#234;color:#cde;border:1px solid #456;border-radius:6px;padding:6px 9px;font-size:13px}
+  button.on{background:#2a6;color:#000;border-color:#2a6}
+  #stats{font-variant-numeric:tabular-nums;white-space:pre-wrap}
+  #err{color:#f77;white-space:pre-wrap}
+  input[type=range]{vertical-align:middle}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div><b>4dgs real asset viewer</b> — toggle the splat and the point cloud independently.</div>
+  <div class="row">
+    <button id="tShu" class="on">Shu2 splat: ON</button>
+    <button id="tHam" class="on">Hammer points: ON</button>
+    <button id="stereo">Stereo: OFF</button>
+    <button id="fixedres">Res: native</button>
+  </div>
+  <div class="row">
+    splat size <input id="ssize" type="range" min="0.2" max="4" step="0.1" value="1">
+    point size <input id="psize" type="range" min="1" max="6" step="0.5" value="2">
+    <button id="run">Start 5-min run</button>
+  </div>
+  <div id="stats">loading assets…</div>
+  <div id="err"></div>
+</div>
+<script>
+"use strict";
+const ASSETS = {
+  shu:  { url:'assets/Shu2Edited.ply',        kind:'splat',  slot:-1.3 },
+  ham:  { url:'assets/Hammer_point_cloud.ply', kind:'points', slot:+1.3 }
+};
+let shuOn=true, hamOn=true, stereo=false, resMode='native';
+let splatSize=1.0, pointSize=2.0;
+
+const cv=document.getElementById('gl');
+const statsEl=document.getElementById('stats');
+const errEl=document.getElementById('err');
+function fail(m){ errEl.textContent += m+"\n"; console.error(m); }
+const gl=cv.getContext('webgl2',{antialias:false,alpha:false,premultipliedAlpha:false});
+if(!gl) fail("WebGL2 not available (iOS needs Safari 15+).");
+
+/* ---------- shaders ---------- */
+const SPLAT_V=`#version 300 es
+precision highp float;
+layout(location=0) in vec2 a_corner;
+layout(location=1) in vec3 a_center;
+layout(location=2) in float a_size;
+layout(location=3) in vec3 a_color;
+layout(location=4) in float a_opacity;
+uniform mat4 u_viewProj, u_view; uniform vec2 u_viewport; uniform float u_focal, u_sizeScale;
+out vec2 v_corner; out vec3 v_color; out float v_op;
+void main(){
+  vec4 vp=u_view*vec4(a_center,1.0); float depth=-vp.z;
+  if(depth<=0.02){ gl_Position=vec4(2.0,2.0,2.0,1.0); return; }
+  vec4 clip=u_viewProj*vec4(a_center,1.0);
+  float pix=clamp(u_sizeScale*a_size*u_focal/depth, 1.0, 350.0);
+  clip.xy += a_corner*pix/(0.5*u_viewport)*clip.w;
+  gl_Position=clip; v_corner=a_corner; v_color=a_color; v_op=a_opacity;
+}`;
+const SPLAT_F=`#version 300 es
+precision highp float;
+in vec2 v_corner; in vec3 v_color; in float v_op; out vec4 frag;
+void main(){ float d2=dot(v_corner,v_corner); if(d2>1.0) discard;
+  float a=exp(-4.0*d2)*v_op; frag=vec4(v_color*a, a); }`;
+
+const PT_V=`#version 300 es
+precision highp float;
+layout(location=0) in vec3 a_pos;
+layout(location=1) in vec3 a_color;
+uniform mat4 u_viewProj; uniform float u_pointSize, u_dpr;
+out vec3 v_color;
+void main(){ gl_Position=u_viewProj*vec4(a_pos,1.0); gl_PointSize=u_pointSize*u_dpr; v_color=a_color; }`;
+const PT_F=`#version 300 es
+precision highp float;
+in vec3 v_color; out vec4 frag;
+void main(){ vec2 d=gl_PointCoord-vec2(0.5); if(dot(d,d)>0.25) discard; frag=vec4(v_color,1.0); }`;
+
+function sh(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS)) fail("shader: "+gl.getShaderInfoLog(o)); return o;}
+function prog(v,f){const p=gl.createProgram();gl.attachShader(p,sh(gl.VERTEX_SHADER,v));gl.attachShader(p,sh(gl.FRAGMENT_SHADER,f));gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS)) fail("link: "+gl.getProgramInfoLog(p)); return p;}
+let splatProg, ptProg, U={};
+if(gl){
+  splatProg=prog(SPLAT_V,SPLAT_F); ptProg=prog(PT_V,PT_F);
+  U.sViewProj=gl.getUniformLocation(splatProg,'u_viewProj'); U.sView=gl.getUniformLocation(splatProg,'u_view');
+  U.sVp=gl.getUniformLocation(splatProg,'u_viewport'); U.sFocal=gl.getUniformLocation(splatProg,'u_focal'); U.sScale=gl.getUniformLocation(splatProg,'u_sizeScale');
+  U.pViewProj=gl.getUniformLocation(ptProg,'u_viewProj'); U.pSize=gl.getUniformLocation(ptProg,'u_pointSize'); U.pDpr=gl.getUniformLocation(ptProg,'u_dpr');
+}
+const cornerBuf=gl?gl.createBuffer():null;
+if(gl){ gl.bindBuffer(gl.ARRAY_BUFFER,cornerBuf); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW); }
+
+/* ---------- PLY loader ---------- */
+const TYPESZ={char:1,uchar:1,int8:1,uint8:1,short:2,ushort:2,int16:2,uint16:2,int:4,uint:4,int32:4,uint32:4,float:4,float32:4,double:8,float64:8};
+function readProp(dv,base,p,le){ const o=base+p.offset; switch(p.type){
+  case 'float': case 'float32': return dv.getFloat32(o,le);
+  case 'double': case 'float64': return dv.getFloat64(o,le);
+  case 'uchar': case 'uint8': return dv.getUint8(o);
+  case 'char': case 'int8': return dv.getInt8(o);
+  case 'ushort': case 'uint16': return dv.getUint16(o,le);
+  case 'short': case 'int16': return dv.getInt16(o,le);
+  case 'uint': case 'uint32': return dv.getUint32(o,le);
+  case 'int': case 'int32': return dv.getInt32(o,le);
+  default: return 0; } }
+async function loadPLY(url){
+  const buf=await (await fetch(url)).arrayBuffer();
+  const bytes=new Uint8Array(buf);
+  // find end_header
+  let hdrEnd=-1; const needle="end_header\n";
+  for(let i=0;i<bytes.length-needle.length;i++){ let ok=true;
+    for(let j=0;j<needle.length;j++){ if(bytes[i+j]!==needle.charCodeAt(j)){ok=false;break;} }
+    if(ok){ hdrEnd=i+needle.length; break; } }
+  if(hdrEnd<0) throw new Error("no end_header in "+url);
+  const header=new TextDecoder().decode(bytes.subarray(0,hdrEnd));
+  const le = header.includes('binary_little_endian');
+  let count=0, props=[], off=0;
+  for(const line of header.split('\n')){
+    const t=line.trim().split(/\s+/);
+    if(t[0]==='element'&&t[1]==='vertex') count=parseInt(t[2],10);
+    else if(t[0]==='property'){ const type=t[1], name=t[2]; props.push({name,type,offset:off}); off+=TYPESZ[type]||4; }
+  }
+  const stride=off, dv=new DataView(buf), pm={}; props.forEach(p=>pm[p.name]=p);
+  return {count,stride,dataStart:hdrEnd,dv,le,pm};
+}
+
+/* ---------- build GPU buffers ---------- */
+function normalize(positions,n,slot){ // center + unit-scale + X slot offset; returns scale applied
+  let mn=[1e9,1e9,1e9], mx=[-1e9,-1e9,-1e9];
+  for(let i=0;i<n;i++){ for(let k=0;k<3;k++){ const v=positions[i*3+k]; if(v<mn[k])mn[k]=v; if(v>mx[k])mx[k]=v; } }
+  const c=[(mn[0]+mx[0])/2,(mn[1]+mx[1])/2,(mn[2]+mx[2])/2];
+  let ext=Math.max(mx[0]-mn[0],mx[1]-mn[1],mx[2]-mn[2])/2; if(ext<=0)ext=1;
+  const s=1.0/ext;
+  for(let i=0;i<n;i++){ positions[i*3]=(positions[i*3]-c[0])*s+slot; positions[i*3+1]=(positions[i*3+1]-c[1])*s; positions[i*3+2]=(positions[i*3+2]-c[2])*s; }
+  return s;
+}
+const SH_C0=0.28209479177387814;
+function sigmoid(x){ return 1/(1+Math.exp(-x)); }
+let shu=null, ham=null;
+
+function buildSplat(ply,slot){
+  const n=ply.count, {dv,le,pm,dataStart,stride}=ply;
+  const cen=new Float32Array(n*3), size=new Float32Array(n), col=new Float32Array(n*3), op=new Float32Array(n);
+  const hasScale = pm.scale_0&&pm.scale_1&&pm.scale_2;
+  for(let i=0;i<n;i++){ const b=dataStart+i*stride;
+    cen[i*3]=readProp(dv,b,pm.x,le); cen[i*3+1]=readProp(dv,b,pm.y,le); cen[i*3+2]=readProp(dv,b,pm.z,le);
+    let r,g,bl;
+    if(pm.f_dc_0){ r=0.5+SH_C0*readProp(dv,b,pm.f_dc_0,le); g=0.5+SH_C0*readProp(dv,b,pm.f_dc_1,le); bl=0.5+SH_C0*readProp(dv,b,pm.f_dc_2,le); }
+    else if(pm.red){ r=readProp(dv,b,pm.red,le)/255; g=readProp(dv,b,pm.green,le)/255; bl=readProp(dv,b,pm.blue,le)/255; }
+    else { r=g=bl=0.7; }
+    col[i*3]=Math.min(1,Math.max(0,r)); col[i*3+1]=Math.min(1,Math.max(0,g)); col[i*3+2]=Math.min(1,Math.max(0,bl));
+    op[i]= pm.opacity ? sigmoid(readProp(dv,b,pm.opacity,le)) : 0.9;
+    if(hasScale){ const s0=Math.exp(readProp(dv,b,pm.scale_0,le)),s1=Math.exp(readProp(dv,b,pm.scale_1,le)),s2=Math.exp(readProp(dv,b,pm.scale_2,le)); size[i]=(s0+s1+s2)/3; }
+    else size[i]=0.01;
+  }
+  const sc=normalize(cen,n,slot);
+  for(let i=0;i<n;i++) size[i]*=sc; // scale splat radius with the normalization
+  const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER,cornerBuf); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  const mk=(loc,arr,sz)=>{ const b=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,b); gl.bufferData(gl.ARRAY_BUFFER,arr,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,sz,gl.FLOAT,false,0,0); gl.vertexAttribDivisor(loc,1); };
+  mk(1,cen,3); mk(2,size,1); mk(3,col,3); mk(4,op,1);
+  gl.bindVertexArray(null);
+  return {vao,n};
+}
+function buildPoints(ply,slot){
+  const n=ply.count, {dv,le,pm,dataStart,stride}=ply;
+  const pos=new Float32Array(n*3), col=new Float32Array(n*3);
+  for(let i=0;i<n;i++){ const b=dataStart+i*stride;
+    pos[i*3]=readProp(dv,b,pm.x,le); pos[i*3+1]=readProp(dv,b,pm.y,le); pos[i*3+2]=readProp(dv,b,pm.z,le);
+    if(pm.red){ col[i*3]=readProp(dv,b,pm.red,le)/255; col[i*3+1]=readProp(dv,b,pm.green,le)/255; col[i*3+2]=readProp(dv,b,pm.blue,le)/255; }
+    else { col[i*3]=col[i*3+1]=col[i*3+2]=0.8; }
+  }
+  normalize(pos,n,slot);
+  const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+  const mk=(loc,arr)=>{ const b=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,b); gl.bufferData(gl.ARRAY_BUFFER,arr,gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0); };
+  mk(0,pos); mk(1,col);
+  gl.bindVertexArray(null);
+  return {vao,n};
+}
+
+/* ---------- matrices ---------- */
+function perspective(f,a,n,fa){const t=1/Math.tan(f/2),nf=1/(n-fa);return[t/a,0,0,0,0,t,0,0,0,0,(fa+n)*nf,-1,0,0,2*fa*n*nf,0];}
+function mul(a,b){const o=new Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++){let s=0;for(let k=0;k<4;k++)s+=a[k*4+r]*b[c*4+k];o[c*4+r]=s;}return o;}
+function lookAt(ex,ey,ez){let zx=ex,zy=ey,zz=ez;const zl=Math.hypot(zx,zy,zz);zx/=zl;zy/=zl;zz/=zl;
+  let sx=1*zz-0*zy,sy=0*zx-0*zz,sz=0*zy-1*zx;const sl=Math.hypot(sx,sy,sz)||1;sx/=sl;sy/=sl;sz/=sl;
+  const tx=zy*sz-zz*sy,ty=zz*sx-zx*sz,tz=zx*sy-zy*sx;
+  return[sx,tx,zx,0,sy,ty,zy,0,sz,tz,zz,0,-(sx*ex+sy*ey+sz*ez),-(tx*ex+ty*ey+tz*ez),-(zx*ex+zy*ey+zz*ez),1];}
+
+/* ---------- resize / stats ---------- */
+let DPR=1;
+function resize(){ DPR=Math.min(window.devicePixelRatio||1,2);
+  if(resMode==='fair720'){cv.width=1280;cv.height=720;}
+  else if(resMode==='glasses'){const e=1200;cv.width=stereo?e*2:e;cv.height=e;}
+  else {cv.width=Math.floor(cv.clientWidth*DPR);cv.height=Math.floor(cv.clientHeight*DPR);} }
+window.addEventListener('resize',resize);
+let frames=0,lastSec=performance.now(),curFps=0,tPrev=performance.now();
+const recent=[]; let running=false,runStart=0,runSamples=[];
+let glRenderer='?';
+
+function frame(now){
+  if(!gl){ requestAnimationFrame(frame); return; }
+  const dt=now-tPrev; tPrev=now; recent.push(dt); if(recent.length>240)recent.shift(); frames++;
+  if(now-lastSec>=1000){ curFps=frames*1000/(now-lastSec); frames=0; lastSec=now;
+    if(running){ runSamples.push({t:(now-runStart)/1000,fps:curFps}); if(now-runStart>=300000) finishRun(); }
+    updateStats(); }
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null); gl.clearColor(0.02,0.02,0.04,1); gl.depthMask(true); gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.disable(gl.BLEND);
+  const ang=now*0.0002,rad=4.5; const ex=Math.cos(ang)*rad,ez=Math.sin(ang)*rad,ey=Math.sin(ang*0.6)*1.2;
+  const W=cv.width,H=cv.height;
+  // note: splats use additive (no depth needed); points use depth. Draw points with depth, splats after with blend & depthMask off.
+  if(stereo){ const hw=Math.floor(W/2),pr=perspective(Math.PI/3,hw/H,0.05,100),o=0.06;
+    drawEyeFull(lookAt(ex-o,ey,ez),pr,0,0,hw,H); drawEyeFull(lookAt(ex+o,ey,ez),pr,hw,0,hw,H); }
+  else { const pr=perspective(Math.PI/3,W/H,0.05,100); drawEyeFull(lookAt(ex,ey,ez),pr,0,0,W,H); }
+  requestAnimationFrame(frame);
+}
+function drawEyeFull(view,proj,vx,vy,vw,vh){
+  gl.viewport(vx,vy,vw,vh); const vpm=mul(proj,view);
+  if(hamOn&&ham){ gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND); gl.useProgram(ptProg);
+    gl.uniformMatrix4fv(U.pViewProj,false,vpm); gl.uniform1f(U.pSize,pointSize); gl.uniform1f(U.pDpr,1.0);
+    gl.bindVertexArray(ham.vao); gl.drawArrays(gl.POINTS,0,ham.n); }
+  if(shuOn&&shu){ gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE,gl.ONE); gl.useProgram(splatProg);
+    gl.uniformMatrix4fv(U.sView,false,view); gl.uniformMatrix4fv(U.sViewProj,false,vpm);
+    gl.uniform2f(U.sVp,vw,vh); gl.uniform1f(U.sFocal,0.5*vh/Math.tan((Math.PI/3)/2)); gl.uniform1f(U.sScale,splatSize);
+    gl.bindVertexArray(shu.vao); gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,4,shu.n); }
+  gl.bindVertexArray(null);
+}
+function pct(a,p){if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y);return s[Math.min(s.length-1,Math.floor(p*s.length))];}
+function active(){ return (shuOn&&shu?shu.n:0)+(hamOn&&ham?ham.n:0); }
+function updateStats(){ const p50=pct(recent,0.5),p95=pct(recent,0.95);
+  let run=""; if(running){const el=(performance.now()-runStart)/1000; run=`\nRUN ${el.toFixed(0)}/300s`;}
+  statsEl.textContent=
+`active primitives: ${active().toLocaleString()}   ${stereo?'STEREO':'mono'}   res:${cv.width}x${cv.height}
+FPS: ${curFps.toFixed(1)}   frame p50:${p50.toFixed(1)}ms p95:${p95.toFixed(1)}ms
+shu(splat):${shu?shu.n.toLocaleString():'…'}  ham(points):${ham?ham.n.toLocaleString():'…'}
+GPU: ${glRenderer}${run}`; }
+function finishRun(){ running=false; const b=document.getElementById('run'); b.classList.remove('on'); b.textContent='Start 5-min run';
+  const med=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)];};
+  const verdict=v=>v>=60?'🟢 GREEN':v>=30?'🟡 YELLOW':'🔴 RED';
+  const all=runSamples.map(s=>s.fps), endT=runSamples.length?runSamples[runSamples.length-1].t:0, overall=med(all);
+  let tl; if(endT<60){ tl=`throttle: too short (${endT.toFixed(0)}s) — run full 5 min`; }
+  else { const tail=med(runSamples.filter(s=>s.t>=endT-30).map(s=>s.fps)); tl=`last-30s FPS:${tail.toFixed(1)} ${verdict(tail)} drop:${(overall-tail).toFixed(1)}`; }
+  errEl.style.color='#9f9';
+  errEl.textContent=`=== RESULT ${active().toLocaleString()} prims ${stereo?'STEREO':'mono'} res ${cv.width}x${cv.height} ===
+sustained median FPS: ${overall.toFixed(1)} ${verdict(overall)}
+${tl}\nGPU: ${glRenderer}`; }
+
+/* ---------- UI ---------- */
+function tog(id,get,set,label){ const b=document.getElementById(id);
+  b.onclick=()=>{ set(!get()); b.classList.toggle('on',get()); b.textContent=label+': '+(get()?'ON':'OFF'); }; }
+tog('tShu',()=>shuOn,v=>shuOn=v,'Shu2 splat');
+tog('tHam',()=>hamOn,v=>hamOn=v,'Hammer points');
+document.getElementById('stereo').onclick=e=>{stereo=!stereo;e.target.textContent='Stereo: '+(stereo?'ON':'OFF');e.target.classList.toggle('on',stereo);resize();};
+document.getElementById('fixedres').onclick=e=>{ resMode=resMode==='native'?'fair720':resMode==='fair720'?'glasses':'native';
+  const l=resMode==='fair720'?'720p FAIR':resMode==='glasses'?'GLASSES 1200/eye':'native'; e.target.textContent='Res: '+l; e.target.classList.toggle('on',resMode!=='native'); resize(); };
+document.getElementById('ssize').oninput=e=>splatSize=parseFloat(e.target.value);
+document.getElementById('psize').oninput=e=>pointSize=parseFloat(e.target.value);
+document.getElementById('run').onclick=e=>{ if(running){finishRun();return;} running=true;runStart=performance.now();runSamples=[];errEl.textContent='';e.target.classList.add('on');e.target.textContent='Stop run'; };
+
+if(gl){ const ext=gl.getExtension('WEBGL_debug_renderer_info'); glRenderer=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER); }
+resize(); requestAnimationFrame(frame);
+(async function(){ try{
+  statsEl.textContent='loading Shu2Edited.ply…';
+  shu=buildSplat(await loadPLY(ASSETS.shu.url),ASSETS.shu.slot);
+  statsEl.textContent='loading Hammer_point_cloud.ply…';
+  ham=buildPoints(await loadPLY(ASSETS.ham.url),ASSETS.ham.slot);
+  updateStats();
+}catch(e){ fail("load error: "+e.message); } })();
+</script>
+</body>
+</html>
