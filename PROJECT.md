@@ -1,7 +1,7 @@
 # PROJECT.md — Single Source of Truth
 
 > **Status:** Architecture / pre-implementation. No code yet.
-> **Last updated:** 2026-06-22 (D20: licensing audit — clean commercial stack; §7b deferred hardware-ID)
+> **Last updated:** 2026-06-22 (D21: 45/60 fps dual-tier; ~100–300k splats per object)
 > **Maintenance rule:** This file is the canonical project log. Update it whenever a decision, plan, feature spec, or idea changes — in conversation OR in files. Append to the **Decision Log** when an idea evolves; edit the relevant section when a spec changes. Keep older decisions visible (strike-through or "superseded by") rather than deleting them, so the reasoning trail survives.
 
 ---
@@ -45,6 +45,9 @@ The offload device varies by context; the system detects capability and scales q
 - **Out / commuting → phone** (the baseline, mobile-first). MUST work across a range of phones (see below), not just flagships.
 - **Home / office → computer** (stronger GPU). Unlocks more: more complex objects, more on-screen at once, heavier workflows.
 - (Future) dedicated wearable compute puck = another tier.
+
+**Framerate tiers (D21):** make 45 vs 60 fps TWO quality tiers, not one global choice. **"Rich" = lock 45fps + max splats** (static/slow hero objects; relies on reprojection to keep head-motion smooth). **"Motion" = 60fps + fewer splats** (animated/fast content). Default to 60 as safe; 45-max-splats is a STRETCH tier trusted only once the warp engine (D19) is built — a stable capped rate always beats a fluctuating one.
+**Per-object count reality:** a single AR object is object-scale, not scene-scale — **~100–300k splats looks high-res for one object** (~100k often plenty; 750k = diminishing returns, hero/close only). Budget = TOTAL on-screen splats (one 300k hero OR three 100k objects). Good news: modest phone budgets support convincing objects.
 
 **Consequence:** the splat budget is a **tiered/adaptive budget**, not one number. Render path must support runtime device-capability detection + per-tier LOD/quality scaling. **Mobile is the from-the-get-go optimization target**; desktop is an *enhanced* mode, never a *required* one.
 
@@ -309,6 +312,7 @@ Snap Inc.'s consumer AR glasses. **Validates our reasoning, doesn't kill us.**
 
 ## 9a. Rendering Benchmark Slice — spec (Next Step #1, detailed)
 > **BUILT:** `benchmark/index.html` (self-contained WebGL2 page, no deps) + `benchmark/README.md`. v1 uses synthetic gaussians + additive/no-sort blending = render-throughput budget (slightly optimistic); refine later with real renderer (mkkellogg) on a real asset. Untested by author — user runs it. Awaiting first results to fill the per-device budget table.
+> **HOSTING:** repo = github.com/yousef-yy4u/AI-SG; deployed on **Railway** via `Dockerfile` (caddy:2-alpine serves `benchmark/` on `$PORT` per `Caddyfile`). Open the Railway `*.up.railway.app` domain on the phone. (Cloudflare quick-tunnel abandoned — QUIC instability on the server, error 1033.)
 
 **Goal:** produce a per-device splat-budget table that validates "realtime splats on cheap hardware" and seeds the adaptive tiers (D9).
 
@@ -338,6 +342,7 @@ Snap Inc.'s consumer AR glasses. **Validates our reasoning, doesn't kill us.**
 - **D8 — This file created** as single source of truth.
 - **D9 — Adaptive offload tiers + mobile-first benchmark.** Offload device is context-dependent: phone when out (baseline), computer when home/office (enhanced — more complex objects/workflows). Splat budget is therefore TIERED, with runtime device-detection + per-tier LOD. Benchmark across a phone matrix spanning ~last 3 years (not flagship-only); desktop = enhanced upper tier, never required. Mobile optimized from the get-go. (§2, §9)
 - **D20 — Licensing audit done; stack swapped to commercially-clean (§4a).** Verified landmines: Inria 3DGS code + diff-gaussian-rasterization (NON-COMMERCIAL — never ship), SOG research repo, InstantMesh/Zero123++ (NC), Hunyuan3D-2 (no EU/UK/SK, 1M-MAU cap), RigAnything (Adobe NC), ShapeNet (NC), SMPL/FLAME-non-2023 (NC + training-taint). Clean stack: TRELLIS/TripoSR/LGM + UniRig + Wan2.1 + mkkellogg/PlayCanvas + Draco/meshopt/KTX2/sogs/PLAS + CLIP/DINOv2-Apache + Objaverse(CC0/CC-BY) + FLAME-2023-Open. (§4a, §3) + §7b deferred hardware-ID placeholder added.
+- **D21 — Framerate = two tiers (45 rich / 60 motion); per-object counts are modest.** Stable capped framerate beats fluctuating. 45fps+max-splats (static heroes, reprojection-dependent) = stretch tier; 60fps = safe default until warp engine proven. Single AR object looks high-res at ~100–300k splats (not millions — that's scene-scale); budget = total on-screen splats. Splat size: hold fixed for count sweep (correct), do ONE size-sensitivity pass at budget count to bound fill-rate vs count-bound. (§2)
 - **D19 — Hand tracking processed on PHONE, not glasses.** Two kinds of real-time: head reprojection = hard (<10ms, local/glasses); hand interaction = soft (~50ms, phone round-trip fits). Hand CV runs on phone w/ SLAM; glasses stay minimal. Budgets layer (phone = object world-pos, glasses reprojection = head-lock → no swim). Failure: bad link → object trails hand; mitigate fast link + optional on-glasses prediction. (§6b)
 - **D18 — Input DECIDED: dual-mode = silent speech (stealth) + full hand motion (power).** Silent speech = discreet all-day command grammar; hand motion = spatial direct-manipulation for private use, covers objects AND general HUD. Complementary by context. RISK: silent-speech IN is least-proven tech → mitigate by prototyping stealth mode with ordinary VOICE (identical grammar, swap to EMG at HW phase); optional temple-touch backstop. Mode-switching = open sub-decision. (§6b)
 - **D17 — Input/interaction was a gap; now spec'd (§6b).** Camera hand-gestures feasible but fight stealth as PRIMARY nav (conspicuous + gorilla-arm + power). Split: HUD nav = DISCREET vs hand-gestures for 3D OBJECT manipulation. *(Primary modality resolved in D18.)*

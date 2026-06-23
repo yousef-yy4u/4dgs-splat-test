@@ -28,6 +28,7 @@
   <div class="row">
     Splat size <input id="size" type="range" min="0.3" max="4" step="0.1" value="1.2">
     <button id="stereo">Stereo: OFF</button>
+    <button id="fixedres">Res: native</button>
     <button id="run">Start 5-min run</button>
     <button id="csv">Export CSV</button>
   </div>
@@ -40,6 +41,7 @@ const COUNTS = [25000,50000,100000,200000,350000,500000,750000,1000000];
 let splatCount = 100000;
 let sizeScale = 1.2;
 let stereo = false;
+let fixedRes = false; // when true, render at a fixed 1280x720 on every device for a FAIR GPU comparison
 
 const cv = document.getElementById('gl');
 const statsEl = document.getElementById('stats');
@@ -162,7 +164,8 @@ function lookAt(ex,ey,ez,cx,cy,cz){
 let DPR=Math.min(window.devicePixelRatio||1, 2);
 function resize(){
   DPR=Math.min(window.devicePixelRatio||1, 2);
-  cv.width=Math.floor(cv.clientWidth*DPR); cv.height=Math.floor(cv.clientHeight*DPR);
+  if(fixedRes){ cv.width=1280; cv.height=720; }
+  else { cv.width=Math.floor(cv.clientWidth*DPR); cv.height=Math.floor(cv.clientHeight*DPR); }
 }
 window.addEventListener('resize',resize);
 
@@ -259,6 +262,7 @@ COUNTS.forEach(c=>{
 });
 document.getElementById('size').oninput=e=>{ sizeScale=parseFloat(e.target.value); };
 document.getElementById('stereo').onclick=e=>{ stereo=!stereo; e.target.textContent='Stereo: '+(stereo?'ON':'OFF'); e.target.classList.toggle('on',stereo); };
+document.getElementById('fixedres').onclick=e=>{ fixedRes=!fixedRes; e.target.textContent='Res: '+(fixedRes?'1280x720 FIXED':'native'); e.target.classList.toggle('on',fixedRes); resize(); };
 document.getElementById('run').onclick=e=>{
   if(running){ finishRun(); return; }
   running=true; runStart=performance.now(); runSamples=[]; errEl.textContent='';
