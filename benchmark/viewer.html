@@ -21,6 +21,7 @@
     <button id="tSplat" class="on">Splat: ON</button>
     <button id="tMesh" class="on">Mesh: ON</button>
     <button id="tBones" class="on">Bones: ON</button>
+    <button id="tGiraffe">Giraffe rig (known-good): OFF</button>
     <button id="tLayout">Layout: Combined</button>
   </div>
   <div id="info">loading…</div>
@@ -61,30 +62,63 @@ function normalizedWrap(obj) {
   return wrap;
 }
 
-const groups = { splat: null, mesh: null, bones: null };
+const groups = { splat: null, mesh: null, bones: null, giraffe: null };
 let layoutSideBySide = false;
 function applyLayout() {
-  const slot = { splat: -1.6, mesh: 0, bones: 1.6 };
-  for (const k of ['splat', 'mesh', 'bones']) if (groups[k]) groups[k].position.x = layoutSideBySide ? slot[k] : 0;
+  const slot = { splat: -1.6, mesh: 0, bones: 1.6, giraffe: 1.6 };
+  for (const k of ['splat', 'mesh', 'bones', 'giraffe']) if (groups[k]) groups[k].position.x = layoutSideBySide ? slot[k] : 0;
 }
 
-// ---- load GLB (mesh + bones) ----
+// Build a bones-only group from a loaded GLB scene: SkeletonHelper lines (bone->child
+// segments) PLUS a sphere at every joint. The spheres are the key fix — a single,
+// childless or zero-length bone produces ZERO helper segments (why the 1-bone crab
+// showed nothing), but a joint sphere is always visible.
+function buildBonesGroup(gltfScene) {
+  const boneRoot = gltfScene.clone(true);
+  boneRoot.traverse(o => { if (o.isMesh || o.isSkinnedMesh) o.visible = false; });
+  const helper = new THREE.SkeletonHelper(boneRoot);
+  helper.material.linewidth = 3;
+  helper.material.depthTest = false;
+  const bg = new THREE.Group(); bg.add(boneRoot); bg.add(helper);
+  // joint spheres
+  boneRoot.updateMatrixWorld(true);
+  const bones = [];
+  boneRoot.traverse(o => { if (o.isBone) bones.push(o); });
+  // size spheres relative to the skeleton's extent
+  const box = new THREE.Box3().setFromObject(boneRoot);
+  const r = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-3) * 0.012;
+  const geo = new THREE.SphereGeometry(Math.max(r, 1e-3), 10, 10);
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false });
+  const inst = new THREE.InstancedMesh(geo, mat, Math.max(bones.length, 1));
+  const m = new THREE.Matrix4(), p = new THREE.Vector3();
+  bones.forEach((b, i) => { b.getWorldPosition(p); inst.setMatrixAt(i, m.makeTranslation(p.x, p.y, p.z)); });
+  inst.instanceMatrix.needsUpdate = true;
+  inst.renderOrder = 999;
+  bg.add(inst);
+  bg.userData.nBones = bones.length;
+  return bg;
+}
+
+// ---- load crab GLB (mesh + bones) ----
 new GLTFLoader().load('assets/crab_rigged.glb', (gltf) => {
   const root = gltf.scene;
-  // mesh
   let meshObj = null;
   root.traverse(o => { if (o.isMesh || o.isSkinnedMesh) { meshObj = o; o.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0, flatShading: false }); } });
   if (meshObj) { groups.mesh = normalizedWrap(root.clone(true)); scene.add(groups.mesh); }
-  // bones via SkeletonHelper on a fresh clone (so scaling is independent)
-  const boneRoot = gltf.scene.clone(true);
-  const helper = new THREE.SkeletonHelper(boneRoot);
-  helper.material.linewidth = 3;
-  const bg = new THREE.Group(); bg.add(boneRoot); bg.add(helper);
-  // hide the mesh inside boneRoot so only the helper lines show
-  boneRoot.traverse(o => { if (o.isMesh || o.isSkinnedMesh) o.visible = false; });
+  const bg = buildBonesGroup(gltf.scene);
+  crabBoneCount = bg.userData.nBones;
   groups.bones = normalizedWrap(bg); scene.add(groups.bones);
   applyLayout(); updateInfo();
-}, undefined, (e) => fail('glb load error: ' + e.message));
+}, undefined, (e) => fail('crab glb load error: ' + e.message));
+
+// ---- load giraffe rig (known-good multi-bone reference; hidden by default) ----
+let crabBoneCount = 0, giraffeBoneCount = 0;
+new GLTFLoader().load('assets/giraffe_rigged.glb', (gltf) => {
+  const bg = buildBonesGroup(gltf.scene);
+  giraffeBoneCount = bg.userData.nBones;
+  groups.giraffe = normalizedWrap(bg); groups.giraffe.visible = false; scene.add(groups.giraffe);
+  applyLayout(); updateInfo();
+}, undefined, (e) => fail('giraffe glb load error: ' + e.message));
 
 // ---- load splat .ply -> colored points ----
 const SH_C0 = 0.28209479177387814;
@@ -117,7 +151,7 @@ async function loadSplatPoints(url) {
 }
 loadSplatPoints('assets/robot_crab_200k.ply').then(pts => { groups.splat = normalizedWrap(pts); scene.add(groups.splat); applyLayout(); updateInfo(); }).catch(e => fail('splat load error: ' + e.message));
 
-function updateInfo() { info.textContent = `splat:${groups.splat ? 'loaded' : '…'}  mesh:${groups.mesh ? 'loaded' : '…'}  bones:${groups.bones ? 'loaded(1 bone — degenerate)' : '…'}   |  drag=orbit, scroll=zoom`; }
+function updateInfo() { info.textContent = `splat:${groups.splat ? 'loaded' : '…'}  mesh:${groups.mesh ? 'loaded' : '…'}  crab-bones:${groups.bones ? crabBoneCount + (crabBoneCount <= 1 ? ' (degenerate — gen bug)' : '') : '…'}  giraffe-bones:${groups.giraffe ? giraffeBoneCount + ' (known-good)' : '…'}   |  drag=orbit, scroll=zoom`; }
 
 // ---- toggles ----
 function tog(id, key, label) {
@@ -125,6 +159,7 @@ function tog(id, key, label) {
   b.onclick = () => { const g = groups[key]; if (!g) return; g.visible = !g.visible; b.classList.toggle('on', g.visible); b.textContent = label + ': ' + (g.visible ? 'ON' : 'OFF'); };
 }
 tog('tSplat', 'splat', 'Splat'); tog('tMesh', 'mesh', 'Mesh'); tog('tBones', 'bones', 'Bones');
+tog('tGiraffe', 'giraffe', 'Giraffe rig (known-good)');
 document.getElementById('tLayout').onclick = e => { layoutSideBySide = !layoutSideBySide; e.target.textContent = 'Layout: ' + (layoutSideBySide ? 'Side-by-side' : 'Combined'); e.target.classList.toggle('on', layoutSideBySide); applyLayout(); };
 
 (function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
