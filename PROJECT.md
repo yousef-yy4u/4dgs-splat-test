@@ -1,7 +1,7 @@
 # PROJECT.md — Single Source of Truth
 
 > **Status:** Architecture / pre-implementation. No code yet.
-> **Last updated:** 2026-06-22 (D22: first benchmark results — iPhone 14 ~200k @ 60fps glasses res, validated)
+> **Last updated:** 2026-06-23 (D24: generation pipeline working — image→splat in ~19s on the 5090)
 > **Maintenance rule:** This file is the canonical project log. Update it whenever a decision, plan, feature spec, or idea changes — in conversation OR in files. Append to the **Decision Log** when an idea evolves; edit the relevant section when a spec changes. Keep older decisions visible (strike-through or "superseded by") rather than deleting them, so the reasoning trail survives.
 
 ---
@@ -290,6 +290,11 @@ Not designing hardware now (software-first). These are captured as TODO topics t
 
 ---
 
+## 8c. Dev resources
+- **Server (`shnri`):** NVIDIA **RTX 5090, 32GB VRAM** (Blackwell — needs recent PyTorch + CUDA 12.8), 36 cores, 94GB RAM, Docker, Python 3.12, Node 18. → generation (TRELLIS etc.) runs LOCALLY, no cloud GPU needed to start.
+- Test devices: iPhone 14 (60Hz), Windows laptop (AMD Radeon iGPU). Render budget validated ~200k splats/object (D22).
+- `.ply` test fixtures preserved in `benchmark/assets/` (Shu2 splat, Hammer point cloud).
+
 ## 9. Next Steps (proposed roadmap)
 See conversation recommendation. Highest-leverage first:
 1. **De-risk the rendering core (Track B foundation).** Vertical slice: take/generate ONE rigged splat asset, render it with rigid-body physics (drop/bounce/move) and measure the **splat-count vs fps** curve in stereo. **Mobile-first**, benchmarked across a **device matrix spanning ~last 3 years of phones** (low/mid/flagship — must not be flagship-only), to produce a **per-tier splat budget**, plus a desktop run as the *enhanced* upper tier. This validates the load-bearing assumption ("realtime animated splats on cheap hardware") AND establishes the adaptive-quality tiers.
@@ -343,6 +348,15 @@ Snap Inc.'s consumer AR glasses. **Validates our reasoning, doesn't kill us.**
 **Table columns:** Device | GPU/SoC | Browser/API | Splat count | Resolution | Mode (mono/stereo) | FPS sustained (p50, 5min) | Frame time p95 (ms) | Mem (MB) | FPS after 5min | Verdict.
 **Verdict (mono):** 🟢 ≥60 (≥72 ideal AR) · 🟡 30–60 · 🔴 <30. Largest 🟢 per device = that tier's budget; halve-ish for stereo.
 
+## 9c. Generation pipeline — WORKING (image → splat, on the 5090)
+**Status: end-to-end working.** image → TRELLIS → gaussian `.ply` → importance-decimate to budget → render.
+- **Env:** venv `/home/sov2/projects/gen-venv` (Python 3.12), torch **2.11.0+cu128** (Blackwell sm_120), TRELLIS clone at `/home/sov2/projects/TRELLIS`.
+- **Deps that worked on Blackwell:** `xformers 0.0.35` (from pytorch cu128 index — sm_120 flash-attn-2 op works but ONLY fp16/bf16, not fp32), `spconv 2.3.8` (spconv-cu126 wheel), `utils3d`, `plyfile`. **kaolin STUBBED** (`gen-venv/.../site-packages/kaolin/utils/testing.py` → no-op `check_tensor`) since it's only imported for the mesh path, which gaussian-only never runs.
+- **Required env vars at run:** `PYTHONPATH=/home/sov2/projects/TRELLIS XFORMERS_DISABLED=1 ATTN_BACKEND=xformers SPARSE_BACKEND=spconv SPCONV_ALGO=native`. `XFORMERS_DISABLED=1` forces **DINOv2** (image encoder) to native attention (it ran fp32 → xformers fa2 rejected it); TRELLIS's own sparse attn still uses xformers (runs fp16 → works).
+- **Scripts (in repo `generation/`):** `run_trellis.py` (image→`out/output.ply`, formats=['gaussian'] only), `decimate_ply.py` (top-N by opacity×volume → LOD).
+- **First result:** robot-crab sample image → **859,328 splats in ~19s** (pipeline load ~43s first time), decimated → `benchmark/assets/robot_crab_200k.ply` (200k, 13MB), wired into `real.html` (3rd toggle "Generated crab").
+- **NOT yet done:** mesh/GLB output (needs kaolin+nvdiffrast — deferred, gaussian is what we need); rigging (UniRig); text→image front-end; productionizing.
+
 ## 10. Decision Log (idea evolution — newest last)
 
 - **D1 — "1.5–2.5s whole pipeline" rejected.** GaussianAvatars is per-subject optimization (600k iters), NOT a sub-second baker. Make-It-Animatable's 0.5s is humanoid-only. A³-GS is multi-view optimization, not feed-forward. → Reframed into the **two-latency model** (§3): one-time generation ~15–40s, steady-state render realtime.
@@ -355,6 +369,8 @@ Snap Inc.'s consumer AR glasses. **Validates our reasoning, doesn't kill us.**
 - **D8 — This file created** as single source of truth.
 - **D9 — Adaptive offload tiers + mobile-first benchmark.** Offload device is context-dependent: phone when out (baseline), computer when home/office (enhanced — more complex objects/workflows). Splat budget is therefore TIERED, with runtime device-detection + per-tier LOD. Benchmark across a phone matrix spanning ~last 3 years (not flagship-only); desktop = enhanced upper tier, never required. Mobile optimized from the get-go. (§2, §9)
 - **D20 — Licensing audit done; stack swapped to commercially-clean (§4a).** Verified landmines: Inria 3DGS code + diff-gaussian-rasterization (NON-COMMERCIAL — never ship), SOG research repo, InstantMesh/Zero123++ (NC), Hunyuan3D-2 (no EU/UK/SK, 1M-MAU cap), RigAnything (Adobe NC), ShapeNet (NC), SMPL/FLAME-non-2023 (NC + training-taint). Clean stack: TRELLIS/TripoSR/LGM + UniRig + Wan2.1 + mkkellogg/PlayCanvas + Draco/meshopt/KTX2/sogs/PLAS + CLIP/DINOv2-Apache + Objaverse(CC0/CC-BY) + FLAME-2023-Open. (§4a, §3) + §7b deferred hardware-ID placeholder added.
+- **D24 — Generation pipeline WORKING end-to-end on the 5090.** image → TRELLIS → 859k-splat `.ply` in ~19s → importance-decimate to 200k budget → rendered in real.html. Blackwell deps solved (xformers cu128 + spconv-cu126 + kaolin stub + DINOv2 native attn). Full reproducibility in §9c. Keystone achieved — next: rigging (UniRig), text→image front-end, then retrieval/library. (§9c)
+- **D23 — Moving to PRODUCT; first build = GENERATION PIPELINE (TRELLIS on local RTX 5090).** Keystone: produces the assets retrieval/library/agent all depend on. Target loop: image/text → TRELLIS → 3D gaussian splat → decimate to ~200k budget → render in real.html. Setup wrinkle: 5090 is Blackwell → needs recent PyTorch + CUDA 12.8. TRELLIS = MIT, outputs gaussians natively (clean per §4a). (§8c, §9)
 - **D22 — Benchmark FIRST RESULTS: core assumption validated.** iPhone 14 = ~200k splats stereo @ locked 60fps @ glasses res (2400×1200), thermally stable → one photoreal object (D21 range) runs realtime on phone-class HW. Laptop AMD iGPU ~350k @ glasses 60fps (beats phone). ≤200k is count-bound not fill-bound. Caveats: benchmark optimistic (no per-frame sort → real budget lower); 60Hz cap hides true edge (test 250k/300k); validate later with real renderer. (§9a)
 - **D21 — Framerate = two tiers (45 rich / 60 motion); per-object counts are modest.** Stable capped framerate beats fluctuating. 45fps+max-splats (static heroes, reprojection-dependent) = stretch tier; 60fps = safe default until warp engine proven. Single AR object looks high-res at ~100–300k splats (not millions — that's scene-scale); budget = total on-screen splats. Splat size: hold fixed for count sweep (correct), do ONE size-sensitivity pass at budget count to bound fill-rate vs count-bound. (§2)
 - **D19 — Hand tracking processed on PHONE, not glasses.** Two kinds of real-time: head reprojection = hard (<10ms, local/glasses); hand interaction = soft (~50ms, phone round-trip fits). Hand CV runs on phone w/ SLAM; glasses stay minimal. Budgets layer (phone = object world-pos, glasses reprojection = head-lock → no swim). Failure: bad link → object trails hand; mitigate fast link + optional on-glasses prediction. (§6b)

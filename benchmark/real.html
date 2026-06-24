@@ -22,8 +22,9 @@
 <div id="ui">
   <div><b>4dgs real asset viewer</b> — toggle the splat and the point cloud independently.</div>
   <div class="row">
-    <button id="tShu" class="on">Shu2 splat: ON</button>
-    <button id="tHam" class="on">Hammer points: ON</button>
+    <button id="tGen" class="on">Generated crab (200k): ON</button>
+    <button id="tShu">Shu2 splat: OFF</button>
+    <button id="tHam">Hammer points: OFF</button>
     <button id="stereo">Stereo: OFF</button>
     <button id="fixedres">Res: native</button>
   </div>
@@ -38,10 +39,11 @@
 <script>
 "use strict";
 const ASSETS = {
-  shu:  { url:'assets/Shu2Edited.ply',        kind:'splat',  slot:-1.3 },
-  ham:  { url:'assets/Hammer_point_cloud.ply', kind:'points', slot:+1.3 }
+  gen:  { url:'assets/robot_crab_200k.ply',    kind:'splat',  slot:0.0  },  // TRELLIS-generated, decimated to 200k
+  shu:  { url:'assets/Shu2Edited.ply',         kind:'splat',  slot:-2.4 },
+  ham:  { url:'assets/Hammer_point_cloud.ply', kind:'points', slot:+2.4 }
 };
-let shuOn=true, hamOn=true, stereo=false, resMode='native';
+let genOn=true, shuOn=false, hamOn=false, stereo=false, resMode='native';
 let splatSize=1.0, pointSize=2.0;
 
 const cv=document.getElementById('gl');
@@ -146,7 +148,7 @@ function normalize(positions,n,slot){ // center + unit-scale + X slot offset; re
 }
 const SH_C0=0.28209479177387814;
 function sigmoid(x){ return 1/(1+Math.exp(-x)); }
-let shu=null, ham=null;
+let shu=null, ham=null, gen=null;
 
 function buildSplat(ply,slot){
   const n=ply.count, {dv,le,pm,dataStart,stride}=ply;
@@ -230,20 +232,21 @@ function drawEyeFull(view,proj,vx,vy,vw,vh){
   if(hamOn&&ham){ gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND); gl.useProgram(ptProg);
     gl.uniformMatrix4fv(U.pViewProj,false,vpm); gl.uniform1f(U.pSize,pointSize); gl.uniform1f(U.pDpr,1.0);
     gl.bindVertexArray(ham.vao); gl.drawArrays(gl.POINTS,0,ham.n); }
-  if(shuOn&&shu){ gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE,gl.ONE); gl.useProgram(splatProg);
+  const splats=[]; if(genOn&&gen)splats.push(gen); if(shuOn&&shu)splats.push(shu);
+  if(splats.length){ gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE,gl.ONE); gl.useProgram(splatProg);
     gl.uniformMatrix4fv(U.sView,false,view); gl.uniformMatrix4fv(U.sViewProj,false,vpm);
     gl.uniform2f(U.sVp,vw,vh); gl.uniform1f(U.sFocal,0.5*vh/Math.tan((Math.PI/3)/2)); gl.uniform1f(U.sScale,splatSize);
-    gl.bindVertexArray(shu.vao); gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,4,shu.n); }
+    for(const a of splats){ gl.bindVertexArray(a.vao); gl.drawArraysInstanced(gl.TRIANGLE_STRIP,0,4,a.n); } }
   gl.bindVertexArray(null);
 }
 function pct(a,p){if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y);return s[Math.min(s.length-1,Math.floor(p*s.length))];}
-function active(){ return (shuOn&&shu?shu.n:0)+(hamOn&&ham?ham.n:0); }
+function active(){ return (genOn&&gen?gen.n:0)+(shuOn&&shu?shu.n:0)+(hamOn&&ham?ham.n:0); }
 function updateStats(){ const p50=pct(recent,0.5),p95=pct(recent,0.95);
   let run=""; if(running){const el=(performance.now()-runStart)/1000; run=`\nRUN ${el.toFixed(0)}/300s`;}
   statsEl.textContent=
 `active primitives: ${active().toLocaleString()}   ${stereo?'STEREO':'mono'}   res:${cv.width}x${cv.height}
 FPS: ${curFps.toFixed(1)}   frame p50:${p50.toFixed(1)}ms p95:${p95.toFixed(1)}ms
-shu(splat):${shu?shu.n.toLocaleString():'…'}  ham(points):${ham?ham.n.toLocaleString():'…'}
+gen:${gen?gen.n.toLocaleString():'…'}  shu:${shu?shu.n.toLocaleString():'…'}  ham:${ham?ham.n.toLocaleString():'…'}
 GPU: ${glRenderer}${run}`; }
 function finishRun(){ running=false; const b=document.getElementById('run'); b.classList.remove('on'); b.textContent='Start 5-min run';
   const med=a=>{if(!a.length)return 0;const s=[...a].sort((x,y)=>x-y);return s[Math.floor(s.length/2)];};
@@ -259,6 +262,7 @@ ${tl}\nGPU: ${glRenderer}`; }
 /* ---------- UI ---------- */
 function tog(id,get,set,label){ const b=document.getElementById(id);
   b.onclick=()=>{ set(!get()); b.classList.toggle('on',get()); b.textContent=label+': '+(get()?'ON':'OFF'); }; }
+tog('tGen',()=>genOn,v=>genOn=v,'Generated crab (200k)');
 tog('tShu',()=>shuOn,v=>shuOn=v,'Shu2 splat');
 tog('tHam',()=>hamOn,v=>hamOn=v,'Hammer points');
 document.getElementById('stereo').onclick=e=>{stereo=!stereo;e.target.textContent='Stereo: '+(stereo?'ON':'OFF');e.target.classList.toggle('on',stereo);resize();};
@@ -271,6 +275,8 @@ document.getElementById('run').onclick=e=>{ if(running){finishRun();return;} run
 if(gl){ const ext=gl.getExtension('WEBGL_debug_renderer_info'); glRenderer=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER); }
 resize(); requestAnimationFrame(frame);
 (async function(){ try{
+  statsEl.textContent='loading generated crab…';
+  gen=buildSplat(await loadPLY(ASSETS.gen.url),ASSETS.gen.slot);
   statsEl.textContent='loading Shu2Edited.ply…';
   shu=buildSplat(await loadPLY(ASSETS.shu.url),ASSETS.shu.slot);
   statsEl.textContent='loading Hammer_point_cloud.ply…';
