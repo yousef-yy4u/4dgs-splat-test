@@ -36,12 +36,27 @@
   </div>
   <div id="bar" class="hide"><div id="barfill"></div></div>
   <div id="stage"></div>
-  <div class="row" id="viewbtns" class="hide" style="display:none">
+  <div class="row" id="viewbtns" style="display:none">
     <span class="lbl">show:</span>
     <button id="tSplat" class="on">Splat: ON</button>
     <button id="tMesh" class="on">Mesh: ON</button>
     <button id="tBones" class="on">Bones: ON</button>
     <button id="tLayout">Layout: Combined</button>
+  </div>
+  <div class="row" id="animrow" style="display:none">
+    <span class="lbl">animate:</span>
+    <button id="aPlay">▶ Animate (sway)</button>
+    <button id="aMove">Drift: OFF</button>
+    <span class="lbl">speed</span><input id="aSpeed" type="range" min="0" max="3" step="0.05" value="1" style="width:80px">
+    <span class="lbl">amount</span><input id="aAmp" type="range" min="0" max="1" step="0.02" value="0.35" style="width:80px">
+  </div>
+  <div class="row" id="manualrow" style="display:none">
+    <span class="lbl">manual bone:</span>
+    <select id="aBone" style="background:#223;color:#cde;border:1px solid #456;border-radius:6px;padding:4px"></select>
+    <span class="lbl">x</span><input id="aRx" type="range" min="-3.14" max="3.14" step="0.02" value="0" style="width:70px">
+    <span class="lbl">y</span><input id="aRy" type="range" min="-3.14" max="3.14" step="0.02" value="0" style="width:70px">
+    <span class="lbl">z</span><input id="aRz" type="range" min="-3.14" max="3.14" step="0.02" value="0" style="width:70px">
+    <button id="aReset">reset bone</button>
   </div>
   <div id="err"></div>
 </div>
@@ -138,7 +153,51 @@ async function loadSplatPoints(url) {
   return new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true }));
 }
 
+// ---------- animation state ----------
+// Static view uses a BAKED plain mesh (cloning a SkinnedMesh breaks its binding -> blob).
+// For animation we instead add the LIVE gltf.scene SkinnedMesh (properly bound) and rotate
+// its bones each frame; Three.js GPU-skins the mesh. (Splat doesn't deform yet — binding is
+// the next step; "Drift" gives whole-asset movement meanwhile.)
+const RIG = { gltf: null, center: new THREE.Vector3(), scale: 1, animGroup: null, bones: null, rest: null, manual: { idx: -1, x: 0, y: 0, z: 0 } };
+let animOn = false, drift = false, animSpeed = 1, animAmp = 0.35, tAnim = 0, lastT = 0;
+const AX = [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion(), _e = new THREE.Euler();
+
+function resetAnim() {
+  if (RIG.animGroup) { disposeGroup(RIG.animGroup); RIG.animGroup = null; }
+  RIG.gltf = null; RIG.bones = null; RIG.rest = null; RIG.manual = { idx: -1, x: 0, y: 0, z: 0 };
+  animOn = false; $('aPlay').classList.remove('on'); $('aPlay').textContent = '▶ Animate (sway)'; $('manualrow').style.display = 'none';
+}
+function buildAnimLayer() {
+  if (RIG.animGroup) return true;
+  if (!RIG.gltf) { fail('nothing to animate yet'); return false; }
+  let sk = null; RIG.gltf.scene.traverse(o => { if (o.isSkinnedMesh) sk = o; });
+  if (!sk || !sk.skeleton || sk.skeleton.bones.length <= 1) { fail('no usable skeleton (rigging failed for this asset)'); return false; }
+  sk.frustumCulled = false;
+  sk.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0 });
+  RIG.bones = sk.skeleton.bones;
+  RIG.rest = RIG.bones.map(b => b.quaternion.clone());
+  RIG.animGroup = wrapFixed(RIG.gltf.scene, RIG.center.clone(), RIG.scale, GLB_ROT_X);
+  RIG.animGroup.visible = false; scene.add(RIG.animGroup);
+  const sel = $('aBone'); sel.innerHTML = '';
+  RIG.bones.forEach((b, i) => { const o = document.createElement('option'); o.value = i; o.textContent = b.name || ('bone_' + i); sel.appendChild(o); });
+  return true;
+}
+function animTick(now) {
+  if (!(animOn && RIG.bones)) { lastT = now; return; }
+  const dt = lastT ? Math.min((now - lastT) / 1000, 0.05) : 0; lastT = now;
+  tAnim += dt * animSpeed;
+  for (let i = 0; i < RIG.bones.length; i++) {
+    _q.copy(RIG.rest[i]);
+    if (animAmp > 0) { const off = animAmp * 0.6 * Math.sin(tAnim * (1 + (i % 5) * 0.15) + i * 0.7); _q2.setFromAxisAngle(AX[i % 3], off); _q.multiply(_q2); }
+    if (i === RIG.manual.idx) { _e.set(RIG.manual.x, RIG.manual.y, RIG.manual.z); _q3.setFromEuler(_e); _q.multiply(_q3); }
+    RIG.bones[i].quaternion.copy(_q);
+  }
+  if (drift) { RIG.animGroup.rotation.y = 0.6 * Math.sin(tAnim * 0.5); RIG.animGroup.position.y = 0.08 * Math.sin(tAnim * 1.3); }
+}
+
 function loadResult(glbUrl, splatUrl) {
+  resetAnim();
   for (const k in groups) { disposeGroup(groups[k]); groups[k] = null; }
   new GLTFLoader().load(glbUrl, (gltf) => {
     gltf.scene.updateMatrixWorld(true);
@@ -153,6 +212,7 @@ function loadResult(glbUrl, splatUrl) {
     }
     const bg = buildBonesGroup(gltf.scene);
     groups.bones = wrapFixed(bg, center.clone(), scale, GLB_ROT_X); scene.add(groups.bones);
+    RIG.gltf = gltf; RIG.center.copy(center); RIG.scale = scale;   // kept for the live anim layer
     applyVisibility(); applyLayout();
   }, undefined, e => fail('glb error: ' + e.message));
   loadSplatPoints(splatUrl).then(pts => { groups.splat = normalizedWrap(pts, SPLAT_ROT_X); scene.add(groups.splat); applyVisibility(); applyLayout(); }).catch(e => fail('splat error: ' + e.message));
@@ -190,10 +250,14 @@ async function poll(job) {
     $('barfill').style.width = (s.pct || 0) + '%';
     stageEl.textContent = (s.error ? '❌ ' + s.error : s.stage + ' …') + (s.pct ? `  (${s.pct}%)` : '');
     if (s.done) {
-      if (s.error) { $('go').disabled = false; return; }
-      stageEl.textContent = '✅ done — rendering';
+      if (s.error) { stageEl.textContent = '❌ ' + s.error; $('go').disabled = false; return; }
+      const r = s.result;
+      stageEl.textContent = (r.rig_ok === false)
+        ? `⚠ rigging: ${r.note || 'failed'} — showing mesh + splat`
+        : `✅ done — ${r.bones || 0} bones`;
       $('viewbtns').style.display = 'flex';
-      loadResult(s.result.glb, s.result.splat);
+      $('animrow').style.display = (r.rig_ok !== false) ? 'flex' : 'none';
+      loadResult(r.glb, r.splat);
       $('go').disabled = false;
       return;
     }
@@ -206,7 +270,26 @@ function tog(id, key, label) { const b = $(id); b.onclick = () => { show[key] = 
 tog('tSplat', 'splat', 'Splat'); tog('tMesh', 'mesh', 'Mesh'); tog('tBones', 'bones', 'Bones');
 $('tLayout').onclick = e => { layoutSideBySide = !layoutSideBySide; e.target.textContent = 'Layout: ' + (layoutSideBySide ? 'Side-by-side' : 'Combined'); e.target.classList.toggle('on', layoutSideBySide); applyLayout(); };
 
-(function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+// ---------- animation controls ----------
+$('aPlay').onclick = () => {
+  if (!RIG.animGroup && !buildAnimLayer()) return;
+  animOn = !animOn;
+  RIG.animGroup.visible = animOn;
+  if (groups.mesh) groups.mesh.visible = animOn ? false : show.mesh;     // swap baked mesh <-> live skinned mesh
+  if (groups.bones) groups.bones.visible = animOn ? false : show.bones;
+  $('aPlay').classList.toggle('on', animOn);
+  $('aPlay').textContent = animOn ? '⏸ Stop' : '▶ Animate (sway)';
+  $('manualrow').style.display = animOn ? 'flex' : 'none';
+  if (!animOn) { RIG.bones && RIG.bones.forEach((b, i) => b.quaternion.copy(RIG.rest[i])); RIG.animGroup.rotation.set(0, 0, 0); RIG.animGroup.position.set(0, 0, 0); }
+};
+$('aMove').onclick = e => { drift = !drift; e.target.textContent = 'Drift: ' + (drift ? 'ON' : 'OFF'); e.target.classList.toggle('on', drift); if (!drift && RIG.animGroup) { RIG.animGroup.rotation.set(0, 0, 0); RIG.animGroup.position.set(0, 0, 0); } };
+$('aSpeed').oninput = e => animSpeed = +e.target.value;
+$('aAmp').oninput = e => animAmp = +e.target.value;
+$('aBone').onchange = e => { RIG.manual.idx = +e.target.value; RIG.manual.x = RIG.manual.y = RIG.manual.z = 0; $('aRx').value = 0; $('aRy').value = 0; $('aRz').value = 0; };
+['aRx','aRy','aRz'].forEach(id => $(id).oninput = () => { RIG.manual.x = +$('aRx').value; RIG.manual.y = +$('aRy').value; RIG.manual.z = +$('aRz').value; });
+$('aReset').onclick = () => { RIG.manual.x = RIG.manual.y = RIG.manual.z = 0; $('aRx').value = 0; $('aRy').value = 0; $('aRz').value = 0; };
+
+(function loop(now) { requestAnimationFrame(loop); animTick(now || 0); controls.update(); renderer.render(scene, camera); })();
 </script>
 </body>
 </html>

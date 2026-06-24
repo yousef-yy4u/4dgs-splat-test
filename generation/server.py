@@ -62,6 +62,18 @@ def load_pipe():
         print(f'[startup] TRELLIS ready in {time.time()-t:.1f}s', flush=True)
     return PIPE
 
+def glb_joint_count(glb_path):
+    """Parse the GLB JSON chunk for skins[0].joints length (the real bone count)."""
+    try:
+        import struct, json
+        with open(glb_path, 'rb') as f:
+            data = f.read()
+        n = struct.unpack('<I', data[12:16])[0]
+        js = json.loads(data[20:20+n])
+        return len(js['skins'][0]['joints']) if js.get('skins') else 0
+    except Exception:
+        return 0
+
 def run_unirig(script, args, tag, job):
     """Run a UniRig launch script in the unirig-venv. Returns (ok, logtail).
     NB: the bpy extract substep often segfaults on EXIT after writing valid output, so we
@@ -109,48 +121,62 @@ def pipeline(job, image_paths, name):
         # stage the clean mesh inside UniRig/examples for tidy npz paths
         shutil.copy(clean_obj, os.path.join(UNIRIG, 'examples', f'{name}.obj'))
 
-        # 3. skeleton
-        log(job, 'UniRig skeleton', 60)
-        skel_fbx = f'examples/{name}_skeleton.fbx'
-        run_unirig('generate_skeleton.sh', ['--input', f'examples/{name}.obj', '--output', skel_fbx], 'skeleton', job)
-        if not os.path.exists(os.path.join(UNIRIG, skel_fbx)):
-            raise RuntimeError('skeleton stage produced no FBX')
-
-        # 4. skin (input MUST be the skeleton FBX so extract reads the armature -> joints)
-        log(job, 'UniRig skin', 78)
-        skin_fbx = f'examples/{name}_skinned.fbx'
-        run_unirig('generate_skin.sh', ['--input', skel_fbx, '--output', skin_fbx, '--data_name', 'raw_data.npz'], 'skin', job)
-        if not os.path.exists(os.path.join(UNIRIG, skin_fbx)):
-            raise RuntimeError('skin stage produced no FBX')
-
-        # 5. assemble viewer assets: rigged GLB + decimated splat
-        log(job, 'assemble', 90)
-        glb = os.path.join(RESULTS, f'{name}_rigged.glb')
-        subprocess.run([UNIRIG_PY, os.path.join(GEN, 'prep_viewer.py'),
-                        os.path.join(UNIRIG, skin_fbx), glb], capture_output=True, text=True)
+        # always produce the web splat first (so even a rig failure still shows the 3D)
         web_splat = os.path.join(RESULTS, f'{name}_splat.ply')
         subprocess.run([GEN_PY, os.path.join(GEN, 'decimate_ply.py'), splat_ply, web_splat, '200000'],
                        capture_output=True, text=True)
-        if not (os.path.exists(glb) and os.path.exists(web_splat)):
-            raise RuntimeError('assembly produced no GLB/splat')
 
-        # bone count for the UI
-        nb = 0
+        glb = os.path.join(RESULTS, f'{name}_rigged.glb')
+        rig_ok, rig_msg, nbones = True, '', 0
         try:
-            import struct, json
-            with open(glb, 'rb') as f: data = f.read()
-            jn = struct.unpack('<I', data[12:16])[0]
-            js = json.loads(data[20:20+jn])
-            nb = len(js.get('nodes', []))  # rough; refined client-side
-        except Exception:
-            pass
+            shutil.copy(clean_obj, os.path.join(UNIRIG, 'examples', f'{name}.obj'))
+
+            # 3. skeleton
+            log(job, 'UniRig skeleton', 60)
+            skel_fbx = f'examples/{name}_skeleton.fbx'
+            _, t1 = run_unirig('generate_skeleton.sh', ['--input', f'examples/{name}.obj', '--output', skel_fbx], 'skeleton', job)
+            if not os.path.exists(os.path.join(UNIRIG, skel_fbx)):
+                raise RuntimeError('skeleton stage produced no FBX (TRELLIS mesh likely too noisy/OOD for the rig model)\n' + t1[-400:])
+
+            # 4. skin (input MUST be the skeleton FBX so extract reads the armature -> joints)
+            log(job, 'UniRig skin', 78)
+            skin_fbx = f'examples/{name}_skinned.fbx'
+            _, t2 = run_unirig('generate_skin.sh', ['--input', skel_fbx, '--output', skin_fbx, '--data_name', 'raw_data.npz'], 'skin', job)
+            if not os.path.exists(os.path.join(UNIRIG, skin_fbx)):
+                raise RuntimeError('skin stage produced no FBX\n' + t2[-400:])
+
+            # 5. assemble rigged GLB
+            log(job, 'assemble', 90)
+            subprocess.run([UNIRIG_PY, os.path.join(GEN, 'prep_viewer.py'),
+                            os.path.join(UNIRIG, skin_fbx), glb], capture_output=True, text=True)
+            if not os.path.exists(glb):
+                raise RuntimeError('GLB assembly failed')
+            nbones = glb_joint_count(glb)
+            if nbones <= 1:
+                rig_ok = False
+                rig_msg = f'degenerate skeleton ({nbones} bone) — mesh likely OOD for the rig model; showing mesh+splat'
+        except Exception as e:
+            rig_ok = False
+            rig_msg = str(e).strip().splitlines()[0][:200]
+            print(f"[{job[:8]}] RIG FAILED -> plain-mesh fallback: {rig_msg}", flush=True)
+            try:
+                import trimesh
+                trimesh.load(clean_obj, force='mesh').export(glb)   # un-rigged mesh so the viewer still shows it
+            except Exception as e2:
+                raise RuntimeError(f'rigging failed AND mesh fallback failed: {rig_msg} / {e2}')
+
+        if not (os.path.exists(glb) and os.path.exists(web_splat)):
+            raise RuntimeError('no output produced')
 
         JOBS[job]['result'] = {
             'glb': f'/out/{name}_rigged.glb',
             'splat': f'/out/{name}_splat.ply',
             'name': name,
+            'rig_ok': rig_ok,
+            'bones': nbones,
+            'note': rig_msg,
         }
-        log(job, 'done', 100)
+        log(job, 'done', 100, '' if rig_ok else f'(rig warning: {rig_msg})')
         JOBS[job]['done'] = True
 
 def worker(job, image_paths, name):
