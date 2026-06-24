@@ -67,16 +67,28 @@ const show = { splat: true, mesh: true, bones: true };
 let layoutSideBySide = false;
 let groups = { splat: null, mesh: null, bones: null };   // active subject's three groups
 
-// normalize an object/group to unit size centered at origin -> wrap in a group we can offset
-function normalizedWrap(obj) {
+// TRELLIS emits its SPLAT (gaussians) Y-up but its MESH Z-up, and the rig pipeline keeps
+// the mesh's frame -> the GLB (mesh + bones) is Z-up. Rotate GLB-derived groups -90° about
+// X so they stand upright (Y-up), matching the splat. (Human/butterfly are bilaterally
+// symmetric, so any residual left/right mirror between the two TRELLIS frames is invisible.)
+const GLB_ROT_X = -Math.PI / 2;
+
+// wrap content with an EXPLICIT center/scale/rotation (so several groups can share one
+// normalization and stay registered to each other — e.g. skeleton sitting inside its mesh).
+function wrapFixed(obj, center, scale, rotX = 0) {
+  const inner = new THREE.Group(); inner.add(obj);
+  obj.position.sub(center); inner.scale.setScalar(scale); inner.rotation.x = rotX;
+  const wrap = new THREE.Group(); wrap.add(inner);
+  return wrap;
+}
+
+// normalize a standalone object to unit size centered at origin.
+function normalizedWrap(obj, rotX = 0) {
   const box = new THREE.Box3().setFromObject(obj);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const s = 1.6 / Math.max(size.x, size.y, size.z || 1e-3);
-  const inner = new THREE.Group(); inner.add(obj);
-  obj.position.sub(center); inner.scale.setScalar(s);
-  const wrap = new THREE.Group(); wrap.add(inner);
-  return wrap;
+  return wrapFixed(obj, center, s, rotX);
 }
 
 function applyLayout() {
@@ -155,12 +167,26 @@ async function loadSubject(key) {
   // GLB -> mesh + bones
   new GLTFLoader().load(S.glb, (gltf) => {
     if (tok !== loadToken) return;
-    const root = gltf.scene;
-    let meshObj = null;
-    root.traverse(o => { if (o.isMesh || o.isSkinnedMesh) { meshObj = o; o.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0 }); } });
-    if (meshObj) { groups.mesh = normalizedWrap(root.clone(true)); scene.add(groups.mesh); }
+    gltf.scene.updateMatrixWorld(true);
+    // MESH: bake the skinned mesh's REST geometry into a plain, NON-skinned mesh. Cloning a
+    // SkinnedMesh breaks its skeleton binding, so the skinning shader explodes the vertices
+    // into a noise blob. We only want the static rest shape -> drop skinning entirely.
+    let src = null;
+    gltf.scene.traverse(o => { if (o.isMesh || o.isSkinnedMesh) src = o; });
+    // ONE normalization from the mesh, reused for bones so the skeleton sits inside the mesh.
+    let center = new THREE.Vector3(), scale = 1;
+    if (src) {
+      const geo = src.geometry.clone();
+      geo.applyMatrix4(src.matrixWorld);          // bake node transform into vertices
+      geo.computeVertexNormals();
+      geo.computeBoundingBox();
+      const size = new THREE.Vector3(); geo.boundingBox.getSize(size); geo.boundingBox.getCenter(center);
+      scale = 1.6 / Math.max(size.x, size.y, size.z || 1e-3);
+      const plain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0 }));
+      groups.mesh = wrapFixed(plain, center, scale, GLB_ROT_X); scene.add(groups.mesh);
+    }
     const bg = buildBonesGroup(gltf.scene); nBones = bg.userData.nBones;
-    groups.bones = normalizedWrap(bg); scene.add(groups.bones);
+    groups.bones = wrapFixed(bg, center.clone(), scale, GLB_ROT_X); scene.add(groups.bones);
     applyVisibility(); applyLayout(); updateInfo();
   }, undefined, (e) => fail(key + ' glb error: ' + e.message));
 
