@@ -355,7 +355,8 @@ Snap Inc.'s consumer AR glasses. **Validates our reasoning, doesn't kill us.**
 - **Required env vars at run:** `PYTHONPATH=/home/sov2/projects/TRELLIS XFORMERS_DISABLED=1 ATTN_BACKEND=xformers SPARSE_BACKEND=spconv SPCONV_ALGO=native`. `XFORMERS_DISABLED=1` forces **DINOv2** (image encoder) to native attention (it ran fp32 → xformers fa2 rejected it); TRELLIS's own sparse attn still uses xformers (runs fp16 → works).
 - **Scripts (in repo `generation/`):** `run_trellis.py` (image→`out/output.ply`, formats=['gaussian'] only), `decimate_ply.py` (top-N by opacity×volume → LOD).
 - **First result:** robot-crab sample image → **859,328 splats in ~19s** (pipeline load ~43s first time), decimated → `benchmark/assets/robot_crab_200k.ply` (200k, 13MB), wired into `real.html` (3rd toggle "Generated crab").
-- **NOT yet done:** mesh/GLB output (needs kaolin+nvdiffrast — deferred, gaussian is what we need); rigging (UniRig); text→image front-end; productionizing.
+- **MESH output also WORKS** (formats=['mesh']) with the kaolin stub — flexicubes extracts fine without real kaolin. Crab → 464,708 verts / 929,372 faces. So pipeline gives aligned mesh+gaussians (needed for rig→bind). GLB *texture* export still needs nvdiffrast (deferred — raw mesh geometry is enough for rigging).
+- **NEXT (validate full pipeline before retrieval, per user):** mesh→ **UniRig** (skeleton+skin weights) → animate + **ElevenLabs** voice. Note: ElevenLabs = audio only; movement is a SEPARATE source (procedural/motion model). First MVP demo likely = rigged MESH animated in Three.js + ElevenLabs audio (splat-binding fidelity is a later upgrade). Render fidelity caveat: real.html's isotropic-additive viewer makes splats look sparse — validate true quality via superspl.at or integrate mkkellogg.
 
 ## 10. Decision Log (idea evolution — newest last)
 
