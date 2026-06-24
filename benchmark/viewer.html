@@ -99,25 +99,41 @@ function applyVisibility() {
   for (const k of ['splat', 'mesh', 'bones']) if (groups[k]) groups[k].visible = show[k];
 }
 
-// Bones-only group: SkeletonHelper lines (bone->child segments) PLUS a sphere at every
-// joint. The spheres are the key fix — a single childless/zero-length bone produces ZERO
-// helper segments (why the 1-bone crab showed nothing), but a joint sphere is always visible.
+// Bones-only group: a sphere at every joint PLUS lines from each joint to its parent.
+// Both are built from the SAME baked world positions, so they share one frame and rotate
+// together with the wrap. (We deliberately do NOT use THREE.SkeletonHelper: it recomputes
+// its lines RELATIVE TO its root every frame, which cancels our -90° wrap rotation and made
+// the lines render 90° off from the dots.) Spheres also guarantee something visible even for
+// a single childless/zero-length bone (the 1-bone crab case).
 function buildBonesGroup(gltfScene) {
   const boneRoot = gltfScene.clone(true);
-  boneRoot.traverse(o => { if (o.isMesh || o.isSkinnedMesh) o.visible = false; });
-  const helper = new THREE.SkeletonHelper(boneRoot);
-  helper.material.linewidth = 3; helper.material.depthTest = false;
-  const bg = new THREE.Group(); bg.add(boneRoot); bg.add(helper);
   boneRoot.updateMatrixWorld(true);
   const bones = []; boneRoot.traverse(o => { if (o.isBone) bones.push(o); });
-  const ext = Math.max(new THREE.Box3().setFromObject(boneRoot).getSize(new THREE.Vector3()).length(), 1e-3);
-  const geo = new THREE.SphereGeometry(Math.max(ext * 0.012, 1e-3), 10, 10);
-  const mat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false });
-  const inst = new THREE.InstancedMesh(geo, mat, Math.max(bones.length, 1));
-  const m = new THREE.Matrix4(), p = new THREE.Vector3();
-  bones.forEach((b, i) => { b.getWorldPosition(p); inst.setMatrixAt(i, m.makeTranslation(p.x, p.y, p.z)); });
+  const bg = new THREE.Group();
+
+  // bake each bone's world position
+  const pos = new Map(), p = new THREE.Vector3();
+  bones.forEach(b => { b.getWorldPosition(p); pos.set(b, p.clone()); });
+
+  // joint spheres
+  const box = new THREE.Box3(); bones.forEach(b => box.expandByPoint(pos.get(b)));
+  const ext = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-3);
+  const geo = new THREE.SphereGeometry(Math.max(ext * 0.015, 1e-4), 10, 10);
+  const inst = new THREE.InstancedMesh(geo, new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false }), Math.max(bones.length, 1));
+  const m = new THREE.Matrix4();
+  bones.forEach((b, i) => { const q = pos.get(b); inst.setMatrixAt(i, m.makeTranslation(q.x, q.y, q.z)); });
   inst.instanceMatrix.needsUpdate = true; inst.renderOrder = 999;
   bg.add(inst);
+
+  // bone->parent line segments (only where the parent is also a bone)
+  const segs = [];
+  bones.forEach(b => { const par = b.parent; if (par && par.isBone && pos.has(par)) { const a = pos.get(b), c = pos.get(par); segs.push(a.x, a.y, a.z, c.x, c.y, c.z); } });
+  if (segs.length) {
+    const lgeo = new THREE.BufferGeometry();
+    lgeo.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
+    const lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({ color: 0x66ccff, depthTest: false }));
+    lines.renderOrder = 998; bg.add(lines);
+  }
   bg.userData.nBones = bones.length;
   return bg;
 }
@@ -194,7 +210,7 @@ async function loadSubject(key) {
   loadSplatPoints(S.splat).then(pts => {
     if (tok !== loadToken) { return; }
     splatCount = pts.geometry.attributes.position.count;
-    groups.splat = normalizedWrap(pts); scene.add(groups.splat);
+    groups.splat = normalizedWrap(pts, Math.PI); scene.add(groups.splat);   // TRELLIS splat is 180° about X (upside-down + facing back) vs the upright mesh
     applyVisibility(); applyLayout(); updateInfo();
   }).catch(e => fail(key + ' splat error: ' + e.message));
 }
