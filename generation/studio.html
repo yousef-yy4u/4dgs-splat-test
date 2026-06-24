@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>4dgs studio — image → rigged 3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0b10;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#eee}
+  #ui{position:fixed;top:8px;left:8px;right:8px;z-index:10;font-size:13px;background:rgba(0,0,0,.62);padding:10px;border-radius:10px;backdrop-filter:blur(4px);max-width:560px}
+  .row{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;align-items:center}
+  .lbl{opacity:.6;margin-right:2px}
+  button{background:#223;color:#cde;border:1px solid #456;border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer}
+  button.on{background:#2a6;color:#001;border-color:#2a6}
+  button.go{background:#48f;color:#001;border-color:#48f;font-weight:600}
+  button:disabled{opacity:.4;cursor:default}
+  #drop{border:2px dashed #456;border-radius:10px;padding:16px;text-align:center;color:#9ab;cursor:pointer}
+  #drop.hot{border-color:#48f;background:rgba(72,128,255,.12)}
+  #thumbs{display:flex;flex-wrap:wrap;gap:6px}
+  #thumbs img{height:54px;border-radius:6px;border:1px solid #345}
+  #bar{height:8px;background:#223;border-radius:5px;overflow:hidden;margin-top:6px}
+  #barfill{height:100%;width:0;background:#48f;transition:width .3s}
+  #stage{color:#9ad;margin-top:4px;min-height:16px}
+  #err{color:#f77;white-space:pre-wrap}
+  .hide{display:none}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div><b>4dgs studio</b> — drop image(s) → TRELLIS → clean → UniRig rig → view. Multiple angles = more accurate.</div>
+  <div id="drop">drag image(s) here, or click to pick &nbsp;·&nbsp; <span style="opacity:.6">1 = single view, 2-4 = multi-view fuse</span></div>
+  <input id="file" type="file" accept="image/*" multiple class="hide">
+  <div class="row" id="thumbs"></div>
+  <div class="row">
+    <button id="go" class="go" disabled>Generate</button>
+    <span id="hint" class="lbl">add at least one image</span>
+  </div>
+  <div id="bar" class="hide"><div id="barfill"></div></div>
+  <div id="stage"></div>
+  <div class="row" id="viewbtns" class="hide" style="display:none">
+    <span class="lbl">show:</span>
+    <button id="tSplat" class="on">Splat: ON</button>
+    <button id="tMesh" class="on">Mesh: ON</button>
+    <button id="tBones" class="on">Bones: ON</button>
+    <button id="tLayout">Layout: Combined</button>
+  </div>
+  <div id="err"></div>
+</div>
+<script type="module">
+const $ = id => document.getElementById(id);
+const errEl = $('err'), stageEl = $('stage');
+const fail = m => { errEl.textContent += m + "\n"; console.error(m); };
+let THREE, GLTFLoader, OrbitControls;
+try {
+  THREE = await import('https://esm.sh/three@0.160.0');
+  ({ GLTFLoader } = await import('https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js'));
+  ({ OrbitControls } = await import('https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js'));
+} catch (e) { fail('three.js load failed: ' + e.message); throw e; }
+
+// ---------- scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0b10);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 100); camera.position.set(0, 0, 4);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 1.2));
+const dir = new THREE.DirectionalLight(0xffffff, 1.5); dir.position.set(2, 3, 2); scene.add(dir);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+// ---------- rendering (same conventions as benchmark/viewer.html) ----------
+// TRELLIS emits splat Y-up but mesh Z-up; the rig keeps the mesh frame -> GLB is Z-up.
+// Rotate GLB-derived groups -90° X to stand upright; the splat is a further 180° X off.
+const GLB_ROT_X = -Math.PI / 2, SPLAT_ROT_X = Math.PI;
+const show = { splat: true, mesh: true, bones: true };
+let layoutSideBySide = false, groups = { splat: null, mesh: null, bones: null };
+
+function wrapFixed(obj, center, scale, rotX = 0) {
+  const inner = new THREE.Group(); inner.add(obj);
+  obj.position.sub(center); inner.scale.setScalar(scale); inner.rotation.x = rotX;
+  const wrap = new THREE.Group(); wrap.add(inner); return wrap;
+}
+function normalizedWrap(obj, rotX = 0) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3()), center = box.getCenter(new THREE.Vector3());
+  return wrapFixed(obj, center, 1.6 / Math.max(size.x, size.y, size.z || 1e-3), rotX);
+}
+function applyLayout() { const slot = { splat: -1.6, mesh: 0, bones: 1.6 }; for (const k in groups) if (groups[k]) groups[k].position.x = layoutSideBySide ? slot[k] : 0; }
+function applyVisibility() { for (const k in groups) if (groups[k]) groups[k].visible = show[k]; }
+function disposeGroup(g) { if (!g) return; scene.remove(g); g.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose()); }); }
+
+// joint spheres + bone->parent lines, both from the SAME baked world positions
+function buildBonesGroup(gltfScene) {
+  const root = gltfScene.clone(true); root.updateMatrixWorld(true);
+  const bones = []; root.traverse(o => { if (o.isBone) bones.push(o); });
+  const bg = new THREE.Group();
+  const pos = new Map(), p = new THREE.Vector3();
+  bones.forEach(b => { b.getWorldPosition(p); pos.set(b, p.clone()); });
+  const box = new THREE.Box3(); bones.forEach(b => box.expandByPoint(pos.get(b)));
+  const ext = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-3);
+  const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(Math.max(ext * 0.015, 1e-4), 10, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false }), Math.max(bones.length, 1));
+  const m = new THREE.Matrix4();
+  bones.forEach((b, i) => { const q = pos.get(b); inst.setMatrixAt(i, m.makeTranslation(q.x, q.y, q.z)); });
+  inst.instanceMatrix.needsUpdate = true; inst.renderOrder = 999; bg.add(inst);
+  const segs = [];
+  bones.forEach(b => { const par = b.parent; if (par && par.isBone && pos.has(par)) { const a = pos.get(b), c = pos.get(par); segs.push(a.x, a.y, a.z, c.x, c.y, c.z); } });
+  if (segs.length) {
+    const lg = new THREE.BufferGeometry(); lg.setAttribute('position', new THREE.Float32BufferAttribute(segs, 3));
+    const lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0x66ccff, depthTest: false })); lines.renderOrder = 998; bg.add(lines);
+  }
+  bg.userData.nBones = bones.length; return bg;
+}
+
+const SH_C0 = 0.28209479177387814;
+async function loadSplatPoints(url) {
+  const buf = await (await fetch(url)).arrayBuffer(); const bytes = new Uint8Array(buf);
+  const needle = 'end_header\n'; let he = -1;
+  for (let i = 0; i < bytes.length - needle.length; i++) { let ok = true; for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle.charCodeAt(j)) { ok = false; break; } if (ok) { he = i + needle.length; break; } }
+  const header = new TextDecoder().decode(bytes.subarray(0, he));
+  const le = header.includes('binary_little_endian');
+  const TS = { float: 4, float32: 4, uchar: 1, uint8: 1, double: 8, int: 4, uint: 4, short: 2, ushort: 2 };
+  let count = 0, props = [], off = 0;
+  for (const line of header.split('\n')) { const t = line.trim().split(/\s+/); if (t[0] === 'element' && t[1] === 'vertex') count = +t[2]; else if (t[0] === 'property') { props.push({ name: t[2], type: t[1], off }); off += TS[t[1]] || 4; } }
+  const stride = off, dv = new DataView(buf), pm = {}; props.forEach(p => pm[p.name] = p);
+  const pos = new Float32Array(count * 3), col = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) { const b = he + i * stride;
+    pos[i*3] = dv.getFloat32(b + pm.x.off, le); pos[i*3+1] = dv.getFloat32(b + pm.y.off, le); pos[i*3+2] = dv.getFloat32(b + pm.z.off, le);
+    let r, g, bl;
+    if (pm.f_dc_0) { r = .5 + SH_C0 * dv.getFloat32(b + pm.f_dc_0.off, le); g = .5 + SH_C0 * dv.getFloat32(b + pm.f_dc_1.off, le); bl = .5 + SH_C0 * dv.getFloat32(b + pm.f_dc_2.off, le); }
+    else if (pm.red) { r = dv.getUint8(b + pm.red.off)/255; g = dv.getUint8(b + pm.green.off)/255; bl = dv.getUint8(b + pm.blue.off)/255; }
+    else r = g = bl = .7;
+    col[i*3] = Math.min(1, Math.max(0, r)); col[i*3+1] = Math.min(1, Math.max(0, g)); col[i*3+2] = Math.min(1, Math.max(0, bl));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true }));
+}
+
+function loadResult(glbUrl, splatUrl) {
+  for (const k in groups) { disposeGroup(groups[k]); groups[k] = null; }
+  new GLTFLoader().load(glbUrl, (gltf) => {
+    gltf.scene.updateMatrixWorld(true);
+    let src = null; gltf.scene.traverse(o => { if (o.isMesh || o.isSkinnedMesh) src = o; });
+    let center = new THREE.Vector3(), scale = 1;
+    if (src) {
+      const geo = src.geometry.clone(); geo.applyMatrix4(src.matrixWorld); geo.computeVertexNormals(); geo.computeBoundingBox();
+      const size = new THREE.Vector3(); geo.boundingBox.getSize(size); geo.boundingBox.getCenter(center);
+      scale = 1.6 / Math.max(size.x, size.y, size.z || 1e-3);
+      const plain = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0 }));
+      groups.mesh = wrapFixed(plain, center, scale, GLB_ROT_X); scene.add(groups.mesh);
+    }
+    const bg = buildBonesGroup(gltf.scene);
+    groups.bones = wrapFixed(bg, center.clone(), scale, GLB_ROT_X); scene.add(groups.bones);
+    applyVisibility(); applyLayout();
+  }, undefined, e => fail('glb error: ' + e.message));
+  loadSplatPoints(splatUrl).then(pts => { groups.splat = normalizedWrap(pts, SPLAT_ROT_X); scene.add(groups.splat); applyVisibility(); applyLayout(); }).catch(e => fail('splat error: ' + e.message));
+}
+
+// ---------- upload UI ----------
+let chosen = [];
+function refreshThumbs() {
+  $('thumbs').innerHTML = '';
+  chosen.forEach(f => { const img = document.createElement('img'); img.src = URL.createObjectURL(f); $('thumbs').appendChild(img); });
+  $('go').disabled = chosen.length === 0;
+  $('hint').textContent = chosen.length ? `${chosen.length} view${chosen.length>1?'s':''} ready` : 'add at least one image';
+}
+const drop = $('drop');
+drop.onclick = () => $('file').click();
+$('file').onchange = e => { chosen = chosen.concat([...e.target.files]); refreshThumbs(); };
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('hot'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('hot'); }));
+drop.addEventListener('drop', e => { chosen = chosen.concat([...e.dataTransfer.files].filter(f => f.type.startsWith('image/'))); refreshThumbs(); });
+
+$('go').onclick = async () => {
+  if (!chosen.length) return;
+  $('go').disabled = true; errEl.textContent = '';
+  $('bar').classList.remove('hide'); $('barfill').style.width = '0%';
+  const fd = new FormData(); chosen.forEach(f => fd.append('images', f));
+  let job;
+  try { const r = await (await fetch('/generate', { method: 'POST', body: fd })).json(); if (r.error) throw new Error(r.error); job = r.job_id; }
+  catch (e) { fail('start failed: ' + e.message); $('go').disabled = false; return; }
+  poll(job);
+};
+
+async function poll(job) {
+  try {
+    const s = await (await fetch('/status/' + job)).json();
+    $('barfill').style.width = (s.pct || 0) + '%';
+    stageEl.textContent = (s.error ? '❌ ' + s.error : s.stage + ' …') + (s.pct ? `  (${s.pct}%)` : '');
+    if (s.done) {
+      if (s.error) { $('go').disabled = false; return; }
+      stageEl.textContent = '✅ done — rendering';
+      $('viewbtns').style.display = 'flex';
+      loadResult(s.result.glb, s.result.splat);
+      $('go').disabled = false;
+      return;
+    }
+  } catch (e) { fail('poll error: ' + e.message); $('go').disabled = false; return; }
+  setTimeout(() => poll(job), 1200);
+}
+
+// ---------- view toggles ----------
+function tog(id, key, label) { const b = $(id); b.onclick = () => { show[key] = !show[key]; if (groups[key]) groups[key].visible = show[key]; b.classList.toggle('on', show[key]); b.textContent = label + ': ' + (show[key] ? 'ON' : 'OFF'); }; }
+tog('tSplat', 'splat', 'Splat'); tog('tMesh', 'mesh', 'Mesh'); tog('tBones', 'bones', 'Bones');
+$('tLayout').onclick = e => { layoutSideBySide = !layoutSideBySide; e.target.textContent = 'Layout: ' + (layoutSideBySide ? 'Side-by-side' : 'Combined'); e.target.classList.toggle('on', layoutSideBySide); applyLayout(); };
+
+(function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+</script>
+</body>
+</html>

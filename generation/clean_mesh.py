@@ -42,8 +42,10 @@ def stats(m, tag):
         print(f"  [{tag}] EMPTY"); return
     tri_clusters, n_tri, _ = m.cluster_connected_triangles()
     ncomp = len(np.unique(np.asarray(tri_clusters)))
+    # NB: deliberately NOT reporting m.is_watertight() — it is pathologically slow (minutes)
+    # on messy multi-view-fused meshes, which would stall the pipeline.
     print(f"  [{tag}] V={len(v):,} F={len(f):,} components={ncomp} "
-          f"area/bbox-density={density(v, f):.2f} watertight={m.is_watertight()}")
+          f"area/bbox-density={density(v, f):.2f}")
 
 
 def main():
