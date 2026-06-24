@@ -8,20 +8,26 @@
   html,body{margin:0;height:100%;background:#0b0b10;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#eee}
   #ui{position:fixed;top:8px;left:8px;right:8px;z-index:10;font-size:13px;background:rgba(0,0,0,.55);padding:8px;border-radius:8px;backdrop-filter:blur(4px)}
   .row{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0;align-items:center}
+  .lbl{opacity:.6;margin-right:2px}
   button{background:#223;color:#cde;border:1px solid #456;border-radius:6px;padding:6px 10px;font-size:13px}
   button.on{background:#2a6;color:#001;border-color:#2a6}
+  button.subj.on{background:#48f;color:#001;border-color:#48f}
   #err{color:#f77;white-space:pre-wrap}
   #info{color:#9ad}
 </style>
 </head>
 <body>
 <div id="ui">
-  <div><b>splat / mesh / bones viewer</b> — toggle each output of the pipeline.</div>
-  <div class="row">
+  <div><b>splat / mesh / bones viewer</b> — pipeline output per subject (image → TRELLIS → clean → UniRig rig).</div>
+  <div class="row"><span class="lbl">subject:</span>
+    <button id="sCrab" class="subj">Crab (1 bone — pre-cleanup bug)</button>
+    <button id="sHuman" class="subj on">Human (28 bones)</button>
+    <button id="sButterfly" class="subj">Butterfly (42 bones)</button>
+  </div>
+  <div class="row"><span class="lbl">show:</span>
     <button id="tSplat" class="on">Splat: ON</button>
     <button id="tMesh" class="on">Mesh: ON</button>
     <button id="tBones" class="on">Bones: ON</button>
-    <button id="tGiraffe">Giraffe rig (known-good): OFF</button>
     <button id="tLayout">Layout: Combined</button>
   </div>
   <div id="info">loading…</div>
@@ -50,6 +56,17 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 1.2));
 const dir = new THREE.DirectionalLight(0xffffff, 1.5); dir.position.set(2, 3, 2); scene.add(dir);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 
+// each subject = a rigged GLB (mesh + armature) produced by our pipeline + its splat .ply
+const SUBJECTS = {
+  crab:      { label: 'Crab',      glb: 'assets/crab_rigged.glb',      splat: 'assets/robot_crab_200k.ply' },
+  human:     { label: 'Human',     glb: 'assets/human_rigged.glb',     splat: 'assets/human_200k.ply' },
+  butterfly: { label: 'Butterfly', glb: 'assets/butterfly_rigged.glb', splat: 'assets/butterfly_184k.ply' },
+};
+let current = 'human';
+const show = { splat: true, mesh: true, bones: true };
+let layoutSideBySide = false;
+let groups = { splat: null, mesh: null, bones: null };   // active subject's three groups
+
 // normalize an object/group to unit size centered at origin -> wrap in a group we can offset
 function normalizedWrap(obj) {
   const box = new THREE.Box3().setFromObject(obj);
@@ -62,65 +79,44 @@ function normalizedWrap(obj) {
   return wrap;
 }
 
-const groups = { splat: null, mesh: null, bones: null, giraffe: null };
-let layoutSideBySide = false;
 function applyLayout() {
-  const slot = { splat: -1.6, mesh: 0, bones: 1.6, giraffe: 1.6 };
-  for (const k of ['splat', 'mesh', 'bones', 'giraffe']) if (groups[k]) groups[k].position.x = layoutSideBySide ? slot[k] : 0;
+  const slot = { splat: -1.6, mesh: 0, bones: 1.6 };
+  for (const k of ['splat', 'mesh', 'bones']) if (groups[k]) groups[k].position.x = layoutSideBySide ? slot[k] : 0;
+}
+function applyVisibility() {
+  for (const k of ['splat', 'mesh', 'bones']) if (groups[k]) groups[k].visible = show[k];
 }
 
-// Build a bones-only group from a loaded GLB scene: SkeletonHelper lines (bone->child
-// segments) PLUS a sphere at every joint. The spheres are the key fix — a single,
-// childless or zero-length bone produces ZERO helper segments (why the 1-bone crab
-// showed nothing), but a joint sphere is always visible.
+// Bones-only group: SkeletonHelper lines (bone->child segments) PLUS a sphere at every
+// joint. The spheres are the key fix — a single childless/zero-length bone produces ZERO
+// helper segments (why the 1-bone crab showed nothing), but a joint sphere is always visible.
 function buildBonesGroup(gltfScene) {
   const boneRoot = gltfScene.clone(true);
   boneRoot.traverse(o => { if (o.isMesh || o.isSkinnedMesh) o.visible = false; });
   const helper = new THREE.SkeletonHelper(boneRoot);
-  helper.material.linewidth = 3;
-  helper.material.depthTest = false;
+  helper.material.linewidth = 3; helper.material.depthTest = false;
   const bg = new THREE.Group(); bg.add(boneRoot); bg.add(helper);
-  // joint spheres
   boneRoot.updateMatrixWorld(true);
-  const bones = [];
-  boneRoot.traverse(o => { if (o.isBone) bones.push(o); });
-  // size spheres relative to the skeleton's extent
-  const box = new THREE.Box3().setFromObject(boneRoot);
-  const r = Math.max(box.getSize(new THREE.Vector3()).length(), 1e-3) * 0.012;
-  const geo = new THREE.SphereGeometry(Math.max(r, 1e-3), 10, 10);
+  const bones = []; boneRoot.traverse(o => { if (o.isBone) bones.push(o); });
+  const ext = Math.max(new THREE.Box3().setFromObject(boneRoot).getSize(new THREE.Vector3()).length(), 1e-3);
+  const geo = new THREE.SphereGeometry(Math.max(ext * 0.012, 1e-3), 10, 10);
   const mat = new THREE.MeshBasicMaterial({ color: 0xffcc33, depthTest: false });
   const inst = new THREE.InstancedMesh(geo, mat, Math.max(bones.length, 1));
   const m = new THREE.Matrix4(), p = new THREE.Vector3();
   bones.forEach((b, i) => { b.getWorldPosition(p); inst.setMatrixAt(i, m.makeTranslation(p.x, p.y, p.z)); });
-  inst.instanceMatrix.needsUpdate = true;
-  inst.renderOrder = 999;
+  inst.instanceMatrix.needsUpdate = true; inst.renderOrder = 999;
   bg.add(inst);
   bg.userData.nBones = bones.length;
   return bg;
 }
 
-// ---- load crab GLB (mesh + bones) ----
-new GLTFLoader().load('assets/crab_rigged.glb', (gltf) => {
-  const root = gltf.scene;
-  let meshObj = null;
-  root.traverse(o => { if (o.isMesh || o.isSkinnedMesh) { meshObj = o; o.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0, flatShading: false }); } });
-  if (meshObj) { groups.mesh = normalizedWrap(root.clone(true)); scene.add(groups.mesh); }
-  const bg = buildBonesGroup(gltf.scene);
-  crabBoneCount = bg.userData.nBones;
-  groups.bones = normalizedWrap(bg); scene.add(groups.bones);
-  applyLayout(); updateInfo();
-}, undefined, (e) => fail('crab glb load error: ' + e.message));
+function disposeGroup(g) {
+  if (!g) return;
+  scene.remove(g);
+  g.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(mt => mt.dispose()); });
+}
 
-// ---- load giraffe rig (known-good multi-bone reference; hidden by default) ----
-let crabBoneCount = 0, giraffeBoneCount = 0;
-new GLTFLoader().load('assets/giraffe_rigged.glb', (gltf) => {
-  const bg = buildBonesGroup(gltf.scene);
-  giraffeBoneCount = bg.userData.nBones;
-  groups.giraffe = normalizedWrap(bg); groups.giraffe.visible = false; scene.add(groups.giraffe);
-  applyLayout(); updateInfo();
-}, undefined, (e) => fail('giraffe glb load error: ' + e.message));
-
-// ---- load splat .ply -> colored points ----
+// ---- splat .ply -> colored points ----
 const SH_C0 = 0.28209479177387814;
 async function loadSplatPoints(url) {
   const buf = await (await fetch(url)).arrayBuffer();
@@ -133,7 +129,6 @@ async function loadSplatPoints(url) {
   let count = 0, props = [], off = 0;
   for (const line of header.split('\n')) { const t = line.trim().split(/\s+/); if (t[0] === 'element' && t[1] === 'vertex') count = +t[2]; else if (t[0] === 'property') { props.push({ name: t[2], type: t[1], off }); off += TS[t[1]] || 4; } }
   const stride = off, dv = new DataView(buf), pm = {}; props.forEach(p => pm[p.name] = p);
-  const rd = (b, p) => p.type[0] === 'u' && p.type !== 'uint' && p.type !== 'ushort' ? dv.getUint8(b + p.off) : dv.getFloat32(b + p.off, le);
   const pos = new Float32Array(count * 3), col = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) { const b = he + i * stride;
     pos[i*3] = dv.getFloat32(b + pm.x.off, le); pos[i*3+1] = dv.getFloat32(b + pm.y.off, le); pos[i*3+2] = dv.getFloat32(b + pm.z.off, le);
@@ -146,22 +141,63 @@ async function loadSplatPoints(url) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-  const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true }));
-  return pts;
+  return new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.01, vertexColors: true, sizeAttenuation: true }));
 }
-loadSplatPoints('assets/robot_crab_200k.ply').then(pts => { groups.splat = normalizedWrap(pts); scene.add(groups.splat); applyLayout(); updateInfo(); }).catch(e => fail('splat load error: ' + e.message));
 
-function updateInfo() { info.textContent = `splat:${groups.splat ? 'loaded' : '…'}  mesh:${groups.mesh ? 'loaded' : '…'}  crab-bones:${groups.bones ? crabBoneCount + (crabBoneCount <= 1 ? ' (degenerate — gen bug)' : '') : '…'}  giraffe-bones:${groups.giraffe ? giraffeBoneCount + ' (known-good)' : '…'}   |  drag=orbit, scroll=zoom`; }
+let nBones = 0, splatCount = 0, loadToken = 0;
+async function loadSubject(key) {
+  current = key;
+  const tok = ++loadToken;                 // guard against overlapping loads
+  for (const k of ['splat', 'mesh', 'bones']) { disposeGroup(groups[k]); groups[k] = null; }
+  nBones = 0; splatCount = 0; updateInfo();
+  const S = SUBJECTS[key];
 
-// ---- toggles ----
+  // GLB -> mesh + bones
+  new GLTFLoader().load(S.glb, (gltf) => {
+    if (tok !== loadToken) return;
+    const root = gltf.scene;
+    let meshObj = null;
+    root.traverse(o => { if (o.isMesh || o.isSkinnedMesh) { meshObj = o; o.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.8, metalness: 0.0 }); } });
+    if (meshObj) { groups.mesh = normalizedWrap(root.clone(true)); scene.add(groups.mesh); }
+    const bg = buildBonesGroup(gltf.scene); nBones = bg.userData.nBones;
+    groups.bones = normalizedWrap(bg); scene.add(groups.bones);
+    applyVisibility(); applyLayout(); updateInfo();
+  }, undefined, (e) => fail(key + ' glb error: ' + e.message));
+
+  // splat .ply -> points
+  loadSplatPoints(S.splat).then(pts => {
+    if (tok !== loadToken) { return; }
+    splatCount = pts.geometry.attributes.position.count;
+    groups.splat = normalizedWrap(pts); scene.add(groups.splat);
+    applyVisibility(); applyLayout(); updateInfo();
+  }).catch(e => fail(key + ' splat error: ' + e.message));
+}
+
+function updateInfo() {
+  info.textContent = `subject: ${SUBJECTS[current].label}  |  splat:${splatCount ? splatCount.toLocaleString() : '…'}  `
+    + `mesh:${groups.mesh ? 'loaded' : '…'}  bones:${nBones || '…'}${nBones === 1 ? ' (degenerate — pre-cleanup)' : ''}`
+    + `   |  drag=orbit, scroll=zoom`;
+}
+
+// ---- subject buttons ----
+const subjBtns = { crab: 'sCrab', human: 'sHuman', butterfly: 'sButterfly' };
+for (const [key, id] of Object.entries(subjBtns)) {
+  document.getElementById(id).onclick = () => {
+    for (const bid of Object.values(subjBtns)) document.getElementById(bid).classList.remove('on');
+    document.getElementById(id).classList.add('on');
+    loadSubject(key);
+  };
+}
+
+// ---- show toggles ----
 function tog(id, key, label) {
   const b = document.getElementById(id);
-  b.onclick = () => { const g = groups[key]; if (!g) return; g.visible = !g.visible; b.classList.toggle('on', g.visible); b.textContent = label + ': ' + (g.visible ? 'ON' : 'OFF'); };
+  b.onclick = () => { show[key] = !show[key]; if (groups[key]) groups[key].visible = show[key]; b.classList.toggle('on', show[key]); b.textContent = label + ': ' + (show[key] ? 'ON' : 'OFF'); };
 }
 tog('tSplat', 'splat', 'Splat'); tog('tMesh', 'mesh', 'Mesh'); tog('tBones', 'bones', 'Bones');
-tog('tGiraffe', 'giraffe', 'Giraffe rig (known-good)');
 document.getElementById('tLayout').onclick = e => { layoutSideBySide = !layoutSideBySide; e.target.textContent = 'Layout: ' + (layoutSideBySide ? 'Side-by-side' : 'Combined'); e.target.classList.toggle('on', layoutSideBySide); applyLayout(); };
 
+loadSubject('human');
 (function loop() { requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
 </script>
 </body>
