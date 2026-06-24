@@ -168,9 +168,22 @@ def pipeline(job, image_paths, name):
         if not (os.path.exists(glb) and os.path.exists(web_splat)):
             raise RuntimeError('no output produced')
 
+        # 6. bind splat -> rig (so the SPLAT animates with the skeleton). Best-effort.
+        splat_skinned_url = None
+        if rig_ok:
+            log(job, 'bind splat to rig', 95)
+            sk_ply = os.path.join(RESULTS, f'{name}_splat_skinned.ply')
+            r = subprocess.run([GEN_PY, os.path.join(GEN, 'bind_splat.py'), glb, web_splat, sk_ply],
+                               capture_output=True, text=True)
+            if os.path.exists(sk_ply):
+                splat_skinned_url = f'/out/{name}_splat_skinned.ply'
+            else:
+                print(f"[{job[:8]}] splat-bind failed: {r.stderr[-300:]}", flush=True)
+
         JOBS[job]['result'] = {
             'glb': f'/out/{name}_rigged.glb',
             'splat': f'/out/{name}_splat.ply',
+            'splat_skinned': splat_skinned_url,
             'name': name,
             'rig_ok': rig_ok,
             'bones': nbones,
