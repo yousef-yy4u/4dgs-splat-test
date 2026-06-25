@@ -85,9 +85,32 @@ for M in signed_perms():
     c = dd.mean()
     if c < best[0]: best = (c, M)
 chamfer, Mbest = best
-print(f"registration chamfer={chamfer:.4f} (lower=better)  scale={scale:.3f}")
+print(f"coarse registration chamfer={chamfer:.4f}  scale={scale:.3f}")
 
-P_local = (Pc * scale) @ Mbest.T + V.mean(0)           # splat in mesh geometry frame
+# ---- refine with trimmed similarity ICP (Umeyama) for EXACT alignment ----
+def umeyama(X, Y):
+    muX, muY = X.mean(0), Y.mean(0)
+    Xc, Yc = X - muX, Y - muY
+    S = (Yc.T @ Xc) / len(X)
+    U, D, Vt = np.linalg.svd(S)
+    d = np.sign(np.linalg.det(U @ Vt))
+    W = np.diag([1, 1, d])
+    R = U @ W @ Vt
+    s = np.trace(np.diag(D) @ W) / ((Xc ** 2).sum() / len(X))
+    t = muY - s * (R @ muX)
+    return s, R, t
+
+Vc_full = V - V.mean(0)
+treeVfull0 = cKDTree(Vc_full)
+P_cur = (Pc * scale) @ Mbest.T                          # in V-centered frame
+for _ in range(8):
+    dd, ii = treeVfull0.query(P_cur, k=1)
+    keep = dd < (np.median(dd) * 2.5 + 1e-6)            # trim outliers
+    s, R, t = umeyama(P_cur[keep], Vc_full[ii[keep]])
+    P_cur = s * (P_cur @ R.T) + t
+fin_dd, _ = treeVfull0.query(P_cur, k=1)
+print(f"ICP-refined chamfer={fin_dd.mean():.4f}  median={np.median(fin_dd):.4f}")
+P_local = P_cur + V.mean(0)                             # splat in mesh geometry frame
 
 # ---- transfer skin weights from nearest mesh vertex ----
 treeVfull = cKDTree(V)

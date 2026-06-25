@@ -39,8 +39,8 @@
   <div class="row" id="viewbtns" style="display:none">
     <span class="lbl">show:</span>
     <button id="tSplat" class="on">Splat: ON</button>
-    <button id="tMesh" class="on">Mesh: ON</button>
-    <button id="tBones" class="on">Bones: ON</button>
+    <button id="tMesh">Mesh: OFF</button>
+    <button id="tBones">Bones: OFF</button>
     <button id="tLayout">Layout: Combined</button>
   </div>
   <div class="row" id="animrow" style="display:none">
@@ -48,7 +48,7 @@
     <button id="aPlay">▶ Animate (sway)</button>
     <button id="aMove">Drift: OFF</button>
     <span class="lbl">speed</span><input id="aSpeed" type="range" min="0" max="3" step="0.05" value="1" style="width:80px">
-    <span class="lbl">amount</span><input id="aAmp" type="range" min="0" max="1" step="0.02" value="0.35" style="width:80px">
+    <span class="lbl">amount</span><input id="aAmp" type="range" min="0" max="1" step="0.02" value="0.6" style="width:80px">
   </div>
   <div class="row" id="manualrow" style="display:none">
     <span class="lbl">manual bone:</span>
@@ -87,7 +87,7 @@ addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; cam
 // TRELLIS emits splat Y-up but mesh Z-up; the rig keeps the mesh frame -> GLB is Z-up.
 // Rotate GLB-derived groups -90° X to stand upright; the splat is a further 180° X off.
 const GLB_ROT_X = -Math.PI / 2, SPLAT_ROT_X = Math.PI;
-const show = { splat: true, mesh: true, bones: true };
+const show = { splat: true, mesh: false, bones: false };   // splat is the hero; mesh/bones are inspection layers
 let layoutSideBySide = false, groups = { splat: null, mesh: null, bones: null };
 
 function wrapFixed(obj, center, scale, rotX = 0) {
@@ -214,7 +214,7 @@ function makeSkinnedPoints(d, sk) {
 // its bones each frame; Three.js GPU-skins the mesh. (Splat doesn't deform yet — binding is
 // the next step; "Drift" gives whole-asset movement meanwhile.)
 const RIG = { gltf: null, center: new THREE.Vector3(), scale: 1, animGroup: null, bones: null, rest: null, skinnedMesh: null, splatPoints: null, splatData: null, manual: { idx: -1, x: 0, y: 0, z: 0 } };
-let animOn = false, drift = false, animSpeed = 1, animAmp = 0.35, tAnim = 0, lastT = 0;
+let animOn = false, drift = false, animSpeed = 1, animAmp = 0.6, tAnim = 0, lastT = 0;
 const AX = [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
 const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion(), _e = new THREE.Euler();
 
@@ -248,7 +248,8 @@ function animTick(now) {
   tAnim += dt * animSpeed;
   for (let i = 0; i < RIG.bones.length; i++) {
     _q.copy(RIG.rest[i]);
-    if (animAmp > 0) { const off = animAmp * 0.6 * Math.sin(tAnim * (1 + (i % 5) * 0.15) + i * 0.7); _q2.setFromAxisAngle(AX[i % 3], off); _q.multiply(_q2); }
+    // skip the root bone (i==0) so sway articulates the body instead of tipping the whole thing
+    if (animAmp > 0 && i > 0) { const off = animAmp * 0.9 * Math.sin(tAnim * (1 + (i % 5) * 0.15) + i * 0.7); _q2.setFromAxisAngle(AX[i % 3], off); _q.multiply(_q2); }
     if (i === RIG.manual.idx) { _e.set(RIG.manual.x, RIG.manual.y, RIG.manual.z); _q3.setFromEuler(_e); _q.multiply(_q3); }
     RIG.bones[i].quaternion.copy(_q);
   }
