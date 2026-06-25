@@ -3,3 +3,5 @@ out/
 __pycache__/
 studio_out/
 studio_uploads/
+
+library/

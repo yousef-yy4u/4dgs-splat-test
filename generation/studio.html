@@ -33,6 +33,12 @@
   <div class="row">
     <button id="go" class="go" disabled>Generate</button>
     <span id="hint" class="lbl">add at least one image</span>
+    <a id="libLink" href="/library" style="background:#223;color:#cde;border:1px solid #456;border-radius:6px;padding:6px 10px;font-size:13px;text-decoration:none">📚 Library</a>
+  </div>
+  <div class="row" id="addrow" style="display:none">
+    <input id="libLabel" placeholder="label, e.g. elephant" style="background:#181826;color:#eee;border:1px solid #345;border-radius:6px;padding:6px 10px;font-size:13px">
+    <button id="aAddLib">＋ Add to library</button>
+    <span id="libMsg" class="lbl"></span>
   </div>
   <div id="bar" class="hide"><div id="barfill"></div></div>
   <div id="stage"></div>
@@ -326,6 +332,7 @@ async function poll(job) {
         : `✅ done — ${r.bones || 0} bones`;
       $('viewbtns').style.display = 'flex';
       $('animrow').style.display = (r.rig_ok !== false) ? 'flex' : 'none';
+      $('addrow').style.display = 'flex'; lastJob = job; $('libMsg').textContent = '';
       loadResult(r);
       $('go').disabled = false;
       return;
@@ -357,6 +364,30 @@ $('aAmp').oninput = e => animAmp = +e.target.value;
 $('aBone').onchange = e => { RIG.manual.idx = +e.target.value; RIG.manual.x = RIG.manual.y = RIG.manual.z = 0; $('aRx').value = 0; $('aRy').value = 0; $('aRz').value = 0; };
 ['aRx','aRy','aRz'].forEach(id => $(id).oninput = () => { RIG.manual.x = +$('aRx').value; RIG.manual.y = +$('aRy').value; RIG.manual.z = +$('aRz').value; });
 $('aReset').onclick = () => { RIG.manual.x = RIG.manual.y = RIG.manual.z = 0; $('aRx').value = 0; $('aRy').value = 0; $('aRz').value = 0; };
+
+// ---------- library: add current result, and view a library asset via ?asset=<id> ----------
+let lastJob = null;
+$('aAddLib').onclick = async () => {
+  if (!lastJob) return;
+  const label = encodeURIComponent($('libLabel').value.trim() || 'asset');
+  $('libMsg').textContent = 'adding…';
+  try {
+    const r = await (await fetch(`/library/add?job=${lastJob}&label=${label}`, { method: 'POST' })).json();
+    $('libMsg').textContent = r.status === 'duplicate' ? `already in library (≈ ${r.asset.label})` : `✅ added as "${r.asset.label}"`;
+  } catch (e) { $('libMsg').textContent = 'add failed: ' + e.message; }
+};
+(async function maybeLoadLibraryAsset() {
+  const id = new URLSearchParams(location.search).get('asset');
+  if (!id) return;
+  try {
+    const list = (await (await fetch('/library/list')).json()).assets || [];
+    const a = list.find(x => x.id === id);
+    if (!a) { fail('asset not found: ' + id); return; }
+    stageEl.textContent = `📚 ${a.label}`;
+    $('viewbtns').style.display = 'flex'; $('animrow').style.display = 'flex';
+    loadResult({ glb: a.glb, splat_skinned: a.splat, splat: a.splat, rig_ok: true });
+  } catch (e) { fail('library load: ' + e.message); }
+})();
 
 (function loop(now) { requestAnimationFrame(loop); animTick(now || 0); controls.update(); renderer.render(scene, camera); })();
 </script>

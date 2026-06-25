@@ -236,6 +236,58 @@ def status(job):
 def out(fn):
     return send_from_directory(RESULTS, fn)
 
+# ---------------- library (retrieval moat) ----------------
+import library as LIB
+
+def _asset_urls(rec):
+    f = rec.get('files', {})
+    return {
+        'id': rec['id'], 'label': rec.get('label', ''), 'category': rec.get('category', ''),
+        'scope': rec.get('scope', ''), 'score': rec.get('score'),
+        'glb': f"/library/asset/{rec['id']}/{f.get('glb')}" if f.get('glb') else None,
+        'splat': f"/library/asset/{rec['id']}/{f.get('splat')}" if f.get('splat') else None,
+        'thumb': f"/library/asset/{rec['id']}/{f['views'][0]}" if f.get('views') else None,
+    }
+
+@app.route('/library')
+def library_page():
+    return send_from_directory(GEN, 'library.html')
+
+@app.route('/library/list')
+def library_list():
+    idx, _ = LIB._load()
+    return jsonify(assets=[_asset_urls(r) for r in idx])
+
+@app.route('/library/search')
+def library_search():
+    q = request.args.get('q', '').strip()
+    k = int(request.args.get('k', '24'))
+    if not q:
+        idx, _ = LIB._load()
+        return jsonify(assets=[_asset_urls(r) for r in idx])
+    return jsonify(assets=[_asset_urls(r) for r in LIB.search_text(q, k)])
+
+@app.route('/library/asset/<aid>/<path:fn>')
+def library_asset(aid, fn):
+    return send_from_directory(os.path.join(LIB.ASSETS, aid), fn)
+
+@app.route('/library/add', methods=['POST'])
+def library_add():
+    job = request.args.get('job')
+    j = JOBS.get(job)
+    if not j or not j.get('done') or not j.get('result'):
+        return jsonify(error='no finished job'), 400
+    r = j['result']
+    name = r['name']
+    glb = os.path.join(RESULTS, f'{name}_rigged.glb')
+    splat = os.path.join(RESULTS, f'{name}_splat_skinned.ply')
+    if not os.path.exists(splat): splat = os.path.join(RESULTS, f'{name}_splat.ply')
+    import glob as _g
+    imgs = sorted(_g.glob(os.path.join(UPLOADS, f'{name}_*.png')))
+    label = request.args.get('label', name)
+    st, rec = LIB.add(name, label, glb, splat, imgs, category=request.args.get('category', ''))
+    return jsonify(status=st, asset=_asset_urls(rec))
+
 if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', '8000'))
     load_pipe()   # warm the model before accepting requests
