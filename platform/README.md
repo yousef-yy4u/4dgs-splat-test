@@ -40,6 +40,15 @@ npm run dev                 # http://localhost:3000  (health at /api/health)
 ```
 No DB yet? `npm run dev` still serves the app; `/api/health` will report `db: down` until one is wired.
 
+## Deploy to Railway (live web app)
+Pushing to GitHub does **not** auto-deploy. To go live:
+1. Railway → **New Service → Deploy from GitHub repo** (`yousef-yy4u/AI-SG`), branch `platform-scaffold` (or `main` after merge).
+2. **Set the service Root Directory to `platform/`** (critical — otherwise Railway uses the repo-root `Dockerfile`, which serves the unrelated benchmark site). `railway.json` here makes it use Nixpacks, run `prisma migrate deploy`, then `npm start`. Node 20 comes from `engines`.
+3. **Set env vars** (Railway → Variables): `DATABASE_URL` (include `?sslmode=require&connect_timeout=30`), `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`, and `GEN_WORKER_URL`.
+4. Railway assigns a public `*.up.railway.app` URL.
+
+> ⚠️ **GPU-worker caveat:** the image→3D worker (`generation/server.py`) runs **locally on the RTX-5090 box**, not in the cloud. A Railway deploy can't reach `localhost:8077`, so asset *generation* won't work from the cloud until the worker is exposed at a public `GEN_WORKER_URL` (a tunnel or its own deploy). The rest — landing, Clerk auth, dashboard, DB — works on Railway today; `/api/health` will just show `genWorker: down`.
+
 ## Next steps (Phase 0 → 1)
 1. Stand up Postgres + run the first migration.
 2. Add auth (Clerk/Auth0) + Org/Membership creation on sign-up.
