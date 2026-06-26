@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { stat } from "node:fs/promises";
 
 // Bake a GLB into a USDZ for iOS AR Quick Look, via Blender (bpy) headless.
 // Co-located: the Next server runs on the same box as the GPU pipeline, so it can
@@ -12,8 +13,17 @@ export function bakeUsdz(glbPath: string, usdzPath: string): Promise<void> {
     let err = "";
     proc.stderr.on("data", (d) => (err += d.toString()));
     proc.on("error", reject);
-    proc.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`usdz bake exited ${code}: ${err.slice(-600)}`)),
-    );
+    // Blender's USD exporter routinely writes valid output then SEGFAULTS on exit cleanup
+    // (exit code null) — same as the UniRig extract step. Judge success by the output file,
+    // not the exit code.
+    proc.on("close", async (code) => {
+      try {
+        const s = await stat(usdzPath);
+        if (s.size > 1024) return resolve();
+      } catch {
+        /* fall through to reject */
+      }
+      reject(new Error(`usdz bake produced no output (exit ${code}): ${err.slice(-500)}`));
+    });
   });
 }

@@ -20,7 +20,12 @@ export type GenStatus = {
 
 export async function submitGeneration(images: Blob[]): Promise<{ jobId: string; nviews: number }> {
   const form = new FormData();
-  for (const img of images) form.append("images", img);
+  // MUST pass a filename — Flask only treats multipart parts WITH a filename as files
+  // (request.files); a nameless Blob lands in request.form and the worker sees no image.
+  for (const img of images) {
+    const filename = img instanceof File ? img.name : "upload.png";
+    form.append("images", img, filename);
+  }
   // /generate_static = textured static GLB (mesh-first, gsplat+nvdiffrast bake) for the
   // un-anchored "view in 3D" product surface. (/generate is the rigging path for the studio.)
   const res = await fetch(`${WORKER_URL}/generate_static`, { method: "POST", body: form });
