@@ -119,12 +119,13 @@ enum JobStatus {
 
 // One row per GPU-worker run (image -> TRELLIS -> ... -> GLB/USDZ). Fronts generation/server.py.
 model Job {
-  id         String    @id @default(cuid())
-  asset      Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  assetId    String
-  status     JobStatus @default(QUEUED)
-  stage      String?   // human-readable current stage (e.g. "trellis", "usdz-bake")
-  error      String?
+  id          String    @id @default(cuid())
+  asset       Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  assetId     String
+  status      JobStatus @default(QUEUED)
+  stage       String?   // human-readable current stage (e.g. "trellis", "usdz-bake")
+  workerJobId String?   // the id returned by generation/server.py /generate
+  error       String?
   startedAt  DateTime?
   finishedAt DateTime?
   createdAt  DateTime  @default(now())

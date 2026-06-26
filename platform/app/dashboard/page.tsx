@@ -1,46 +1,55 @@
 import { currentUser } from "@clerk/nextjs/server";
 import { ensureUserOrg } from "@/lib/auth";
+import { prisma } from "@/lib/db";
+import AssetCreator from "./AssetCreator";
 
 export const dynamic = "force-dynamic";
 
 export default async function Dashboard() {
   const user = await currentUser();
-
-  // Mirror the Clerk user into our DB + ensure an Org. Tolerate the DB being down in Phase 0
-  // (DATABASE_URL not yet wired) so the auth shell is still demoable.
-  let org: { orgId: string; userId: string } | null = null;
-  let dbError: string | null = null;
-  try {
-    org = await ensureUserOrg();
-  } catch (e) {
-    dbError = e instanceof Error ? e.message : String(e);
-  }
+  const org = await ensureUserOrg();
+  const assets = org
+    ? await prisma.asset.findMany({
+        where: { orgId: org.orgId },
+        orderBy: { createdAt: "desc" },
+        include: { widgets: true },
+        take: 30,
+      })
+    : [];
 
   return (
-    <main className="mx-auto max-w-2xl px-6 py-16">
+    <main className="mx-auto max-w-3xl px-6 py-12">
       <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-      <p className="mt-2 text-neutral-600 dark:text-neutral-300">
-        Signed in as <strong>{user?.primaryEmailAddress?.emailAddress ?? user?.id}</strong>.
+      <p className="mt-1 text-sm text-neutral-500">
+        {user?.primaryEmailAddress?.emailAddress ?? user?.id}
       </p>
 
-      <div className="mt-6 rounded-lg border border-neutral-200 p-4 text-sm dark:border-neutral-800">
-        {org ? (
-          <p>
-            Workspace ready · org <code>{org.orgId}</code>
-          </p>
-        ) : dbError ? (
-          <p className="text-amber-600">
-            Auth works; DB sync pending — set <code>DATABASE_URL</code> and run{" "}
-            <code>npm run db:migrate</code>. ({dbError.split("\n")[0]})
-          </p>
-        ) : (
-          <p>No workspace yet.</p>
-        )}
+      <div className="mt-8">
+        <AssetCreator />
       </div>
 
-      <p className="mt-6 text-xs text-neutral-400">
-        Next: asset creation (image → GLB + USDZ) and the &ldquo;view in 3D&rdquo; publish step.
-      </p>
+      <h2 className="mt-10 font-semibold">Your assets</h2>
+      {assets.length === 0 ? (
+        <p className="mt-2 text-sm text-neutral-500">None yet — create one above.</p>
+      ) : (
+        <ul className="mt-3 divide-y divide-neutral-200 dark:divide-neutral-800">
+          {assets.map((a) => (
+            <li key={a.id} className="flex items-center justify-between py-3 text-sm">
+              <span>
+                {a.name}{" "}
+                <span className="text-neutral-400">· {a.status.toLowerCase()}</span>
+              </span>
+              {a.widgets[0] ? (
+                <a className="text-blue-600 underline" href={`/v/${a.widgets[0].slug}`} target="_blank">
+                  view in 3D ↗
+                </a>
+              ) : (
+                <span className="text-neutral-400">unpublished</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </main>
   );
 }

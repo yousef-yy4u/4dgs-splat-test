@@ -37,3 +37,6 @@ next-env.d.ts
 
 # env (keep real secrets out of git; commit .env.example only)
 .env
+
+# local asset storage (Phase 0)
+/storage
