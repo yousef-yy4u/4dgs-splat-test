@@ -21,7 +21,9 @@ export type GenStatus = {
 export async function submitGeneration(images: Blob[]): Promise<{ jobId: string; nviews: number }> {
   const form = new FormData();
   for (const img of images) form.append("images", img);
-  const res = await fetch(`${WORKER_URL}/generate`, { method: "POST", body: form });
+  // /generate_static = textured static GLB (mesh-first, gsplat+nvdiffrast bake) for the
+  // un-anchored "view in 3D" product surface. (/generate is the rigging path for the studio.)
+  const res = await fetch(`${WORKER_URL}/generate_static`, { method: "POST", body: form });
   if (!res.ok) throw new Error(`worker /generate ${res.status}: ${await res.text()}`);
   const json = (await res.json()) as { job_id: string; nviews: number };
   return { jobId: json.job_id, nviews: json.nviews };

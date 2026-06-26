@@ -21,6 +21,11 @@ os.environ.setdefault('ATTN_BACKEND', 'xformers')
 os.environ.setdefault('SPARSE_BACKEND', 'spconv')
 os.environ.setdefault('SPCONV_ALGO', 'native')
 os.environ.setdefault('XFORMERS_DISABLED', '1')
+# nvdiffrast (texture baking in to_glb): the 5090 is Blackwell sm_120 but the toolkit here is
+# CUDA 12.5 (nvcc maxes at sm_90), so build PTX for 9.0 and let the driver JIT to Blackwell.
+os.environ.setdefault('CUDA_HOME', '/usr/local/cuda-12.5')
+os.environ.setdefault('TORCH_CUDA_ARCH_LIST', '9.0+PTX')
+os.environ['PATH'] = '/usr/local/cuda-12.5/bin' + os.pathsep + os.environ.get('PATH', '')
 TRELLIS_DIR = '/home/sov2/projects/TRELLIS'
 if TRELLIS_DIR not in sys.path:
     sys.path.insert(0, TRELLIS_DIR)
@@ -199,6 +204,40 @@ def worker(job, image_paths, name):
         traceback.print_exc()
         JOBS[job].update(error=str(e), done=True)
 
+def pipeline_static(job, image_paths, name):
+    """image(s) -> TEXTURED static GLB (mesh-first, no rig) for the un-anchored 'view in 3D'
+    surface. Uses TRELLIS to_glb (nvdiffrast texture bake) so products show in colour."""
+    with PIPE_LOCK:
+        pipe = load_pipe()
+        log(job, 'preprocess', 5)
+        imgs = [Image.open(p).convert('RGBA') for p in image_paths]
+        log(job, f'TRELLIS ({len(imgs)} view{"s" if len(imgs) > 1 else ""})', 25)
+        t = time.time()
+        if len(imgs) == 1:
+            out = pipe.run(imgs[0], seed=1, formats=['mesh', 'gaussian'])
+        else:
+            out = pipe.run_multi_image(imgs, seed=1, formats=['mesh', 'gaussian'])
+        log(job, 'bake texture (nvdiffrast)', 60, f'{time.time()-t:.0f}s')
+        # commercially-clean texture bake: swap TRELLIS's Inria gaussian renderer (§4a landmine)
+        # for gsplat (Apache-2.0) before to_glb renders the gaussian for baking.
+        import gsplat_render
+        gsplat_render.patch()
+        from trellis.utils import postprocessing_utils
+        glb = postprocessing_utils.to_glb(out['gaussian'][0], out['mesh'][0],
+                                          simplify=0.95, texture_size=1024, verbose=False)
+        out_glb = os.path.join(RESULTS, f'{name}_textured.glb')
+        glb.export(out_glb)
+        JOBS[job]['result'] = {'glb': f'/out/{name}_textured.glb', 'name': name, 'textured': True}
+        log(job, 'done', 100)
+        JOBS[job]['done'] = True
+
+def worker_static(job, image_paths, name):
+    try:
+        pipeline_static(job, image_paths, name)
+    except Exception as e:
+        traceback.print_exc()
+        JOBS[job].update(error=str(e), done=True)
+
 # ----------------------------------------------------------------------------
 # web
 # ----------------------------------------------------------------------------
@@ -208,6 +247,14 @@ app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024   # 200MB upload
 @app.route('/')
 def index():
     return send_from_directory(GEN, 'studio.html')
+
+@app.route('/poc')
+def poc():
+    return send_from_directory(GEN, 'poc_splat_anim.html')
+
+@app.route('/poc-smooth')
+def poc_smooth():
+    return send_from_directory(GEN, 'poc_splat_smooth.html')
 
 @app.route('/generate', methods=['POST'])
 def generate():
@@ -223,6 +270,23 @@ def generate():
         paths.append(p)
     JOBS[job] = dict(stage='queued', pct=0, done=False, error=None, result=None, nviews=len(paths))
     threading.Thread(target=worker, args=(job, paths, name), daemon=True).start()
+    return jsonify(job_id=job, nviews=len(paths))
+
+@app.route('/generate_static', methods=['POST'])
+def generate_static():
+    """Textured static GLB (no rig) — the un-anchored 'view in 3D' product path."""
+    files = request.files.getlist('images')
+    if not files:
+        return jsonify(error='no images uploaded'), 400
+    job = uuid.uuid4().hex
+    name = 'gen_' + job[:8]
+    paths = []
+    for i, f in enumerate(files):
+        p = os.path.join(UPLOADS, f'{name}_{i}.png')
+        Image.open(f.stream).convert('RGBA').save(p)
+        paths.append(p)
+    JOBS[job] = dict(stage='queued', pct=0, done=False, error=None, result=None, nviews=len(paths))
+    threading.Thread(target=worker_static, args=(job, paths, name), daemon=True).start()
     return jsonify(job_id=job, nviews=len(paths))
 
 @app.route('/status/<job>')
