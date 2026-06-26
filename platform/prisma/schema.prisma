@@ -1,0 +1,288 @@
+// Marker-Anchored AR Asset Platform — data model (PROJECT.md §0 / IMPLEMENTATION_PLAN.md Phase 0)
+// Design rules baked in here:
+//  - Multi-tenant: every asset/anchor belongs to an Org (a paying business).
+//  - One asset, two surfaces: an Asset is authored once, then published un-anchored (Widget)
+//    and/or anchored (Anchor). The Asset stores BOTH delivery formats (GLB canonical + USDZ for iOS).
+//  - Governance from day one (§0.8): an Anchor always carries owner + permissionScope + spatialClaim
+//    + a moderation status — never bolted on later.
+//  - The map is rented first (Immersal) behind a provider field, then swapped for our own (Phase 4).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────── Tenancy & people ───────────────────────────
+
+model Org {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members      Membership[]
+  assets       Asset[]
+  anchors      Anchor[]
+  maps         LocationMap[]
+  subscription Subscription?
+}
+
+model User {
+  id          String       @id @default(cuid())
+  email       String       @unique
+  name        String?
+  authProvider String?     // e.g. clerk/auth0 subject id (auth wired in next)
+  createdAt   DateTime     @default(now())
+  memberships Membership[]
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+model Membership {
+  id     String @id @default(cuid())
+  org    Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId  String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  role   Role   @default(OWNER)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+}
+
+// ─────────────────────────── Assets & pipeline ───────────────────────────
+
+enum AssetSource {
+  PRODUCT_IMAGE  // lead pipeline (reuses generation/server.py — TRELLIS/UniRig)
+  CANVAS_2D      // Phase 1 second pipeline
+  UPLOAD_GLB     // bring-your-own / 8th Wall migration import
+}
+
+enum AssetStatus {
+  DRAFT          // created, not yet processed
+  PROCESSING     // a Job is running on the GPU worker
+  READY          // GLB (+USDZ) baked, CDN-published, viewable
+  FAILED         // see latest Job.error
+}
+
+enum RenderKind {
+  MESH           // default, mesh-first (D34)
+  STATIC_SPLAT   // hero/premium tier (D34) — never animated
+}
+
+model Asset {
+  id        String      @id @default(cuid())
+  org       Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId     String
+  name      String
+  source    AssetSource
+  renderKind RenderKind @default(MESH)
+  status    AssetStatus @default(DRAFT)
+
+  // Authoring inputs (e.g. uploaded product image paths / canvas doc); kept small, blobs live in storage.
+  inputRefs Json?       // { images: ["s3://..."], canvasDoc: {...} }
+
+  // Delivery formats — one asset, two paths (Android=GLB/WebXR, iOS=USDZ/AR Quick Look).
+  glbUrl    String?     // canonical, mesh-first, Draco/meshopt/KTX2 compressed
+  usdzUrl   String?     // pre-baked at publish (curated, not lossy auto-convert)
+  posterUrl String?     // thumbnail/poster for <model-viewer>
+  lods      Json?       // [{ level: "high", glbUrl, tris }, ...] quality tiers
+
+  // Simple keyframe animation authored in the no-code builder (USDZ supports ONE track — author within that).
+  animation Json?
+
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  jobs    Job[]
+  widgets Widget[]
+  anchors Anchor[]
+
+  @@index([orgId])
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+// One row per GPU-worker run (image -> TRELLIS -> ... -> GLB/USDZ). Fronts generation/server.py.
+model Job {
+  id         String    @id @default(cuid())
+  asset      Asset     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  assetId    String
+  status     JobStatus @default(QUEUED)
+  stage      String?   // human-readable current stage (e.g. "trellis", "usdz-bake")
+  error      String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([assetId])
+  @@index([status])
+}
+
+// ─────────────────────────── Un-anchored surface ───────────────────────────
+
+// A published "view in 3D" widget: embeddable web component / iframe / shareable link / print QR.
+model Widget {
+  id          String   @id @default(cuid())
+  asset       Asset    @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  assetId     String
+  slug        String   @unique          // public URL + QR target
+  watermark   Boolean  @default(true)   // free tier watermarked; removal is a paid capability
+  config      Json?    // viewer config (autorotate, env, AR placement, etc.)
+  createdAt   DateTime @default(now())
+
+  // NOTE: analytics are counted but views are NEVER metered for billing (D37).
+  viewEvents  ViewEvent[]
+
+  @@index([assetId])
+}
+
+enum Surface {
+  UNANCHORED
+  ANCHORED
+}
+
+model ViewEvent {
+  id        String   @id @default(cuid())
+  widget    Widget?  @relation(fields: [widgetId], references: [id], onDelete: Cascade)
+  widgetId  String?
+  anchor    Anchor?  @relation(fields: [anchorId], references: [id], onDelete: Cascade)
+  anchorId  String?
+  surface   Surface
+  kind      String   // "view" | "ar_enter" | "interact"
+  ts        DateTime @default(now())
+
+  @@index([widgetId])
+  @@index([anchorId])
+}
+
+// ─────────────────────────── Anchored surface (governance from day one) ───────────────────────────
+
+enum MapProvider {
+  IMMERSAL       // rented MVP (owner-seeded mapping) — the Phase 3 lean
+  ARCORE_GEO     // alt rented
+  SELF           // our own COLMAP+hloc map (Phase 4 moat)
+}
+
+enum MapStatus {
+  CAPTURING
+  PROCESSING
+  READY
+  FAILED
+}
+
+// A re-localizable per-location map, built ONCE per location and shared by every anchor + viewer there.
+model LocationMap {
+  id           String      @id @default(cuid())
+  org          Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId        String
+  provider     MapProvider @default(IMMERSAL)
+  providerMapId String?    // id in Immersal/etc.; null while SELF map is processing
+  status       MapStatus   @default(CAPTURING)
+  coarseGps    Json?       // { lat, lng } for discovery/indexing (NOT required for marker path)
+  occluderUrl  String?     // baked occluder mesh for depth/occlusion (Phase 4)
+  createdAt    DateTime    @default(now())
+
+  anchors Anchor[]
+  markers Marker[]
+
+  @@index([orgId])
+}
+
+enum MarkerKind {
+  QR
+  IMAGE_TARGET   // branded image marker (paid capability)
+}
+
+// The pointer: resolves to {mapId, assetId, pose}. Identity solved entirely here (no map needed for identity).
+model Marker {
+  id        String      @id @default(cuid())
+  kind      MarkerKind  @default(QR)
+  anchor    Anchor      @relation(fields: [anchorId], references: [id], onDelete: Cascade)
+  anchorId  String      @unique
+  map       LocationMap @relation(fields: [mapId], references: [id], onDelete: Cascade)
+  mapId     String
+  assetRef  String      // resolves to Asset.id (kept explicit for fast marker resolution)
+  styleRef  String?     // branded styling / registered image-target ref
+  createdAt DateTime    @default(now())
+
+  @@index([mapId])
+}
+
+enum PermissionScope {
+  OWNED_PROPERTY     // owner controls the physical space
+  PUBLIC_CLAIM       // public space claim (needs moderation)
+  LICENSED           // permitted by a third party
+}
+
+enum ModerationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// An anchored asset placement. ALWAYS carries owner + permissionScope + spatialClaim + moderation (§0.8).
+model Anchor {
+  id            String          @id @default(cuid())
+  org           Org             @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId         String
+  asset         Asset           @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  assetId       String
+  map           LocationMap     @relation(fields: [mapId], references: [id], onDelete: Cascade)
+  mapId         String
+
+  poseInMap     Json            // { position:[x,y,z], rotation:[x,y,z,w], scale } in the map's coordinate frame
+  coarseGps     Json?           // for discovery/indexing
+
+  // Governance — required, not optional.
+  permissionScope PermissionScope @default(OWNED_PROPERTY)
+  spatialClaim    Json?           // claimed region of real space (to prevent overlap/spam)
+  moderation      ModerationStatus @default(PENDING)
+  moderationNote  String?
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  marker     Marker?
+  viewEvents ViewEvent[]
+
+  @@index([orgId])
+  @@index([mapId])
+}
+
+// ─────────────────────────── Billing (skeleton; wired next) ───────────────────────────
+
+enum Plan {
+  FREE
+  STARTER
+  GROWTH
+  ENTERPRISE
+}
+
+model Subscription {
+  id                 String   @id @default(cuid())
+  org                Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  orgId              String   @unique
+  plan               Plan     @default(FREE)
+  stripeCustomerId   String?
+  stripeSubscriptionId String?
+  // anchored is billed per active location; capability gates (branded marker / persistent map /
+  // multi-location / watermark removal) drive conversion — NOT view counts (D37).
+  activeLocations    Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
