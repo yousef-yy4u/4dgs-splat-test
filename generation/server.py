@@ -225,6 +225,14 @@ def pipeline_static(job, image_paths, name):
         from trellis.utils import postprocessing_utils
         glb = postprocessing_utils.to_glb(out['gaussian'][0], out['mesh'][0],
                                           simplify=0.95, texture_size=1024, verbose=False)
+        # to_glb leaves metallicFactor unset -> glTF default 1.0 (fully metallic) -> the model
+        # renders BLACK wherever it doesn't catch bright env light (top/bottom). These are matte
+        # products, not chrome: force dielectric.
+        try:
+            glb.visual.material.metallicFactor = 0.0
+            glb.visual.material.roughnessFactor = 1.0
+        except Exception as e:
+            print(f"[{job[:8]}] could not set metallicFactor: {e}", flush=True)
         out_glb = os.path.join(RESULTS, f'{name}_textured.glb')
         glb.export(out_glb)
         JOBS[job]['result'] = {'glb': f'/out/{name}_textured.glb', 'name': name, 'textured': True}
