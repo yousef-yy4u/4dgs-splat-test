@@ -79,6 +79,11 @@ enum RenderKind {
   STATIC_SPLAT   // hero/premium tier (D34) — never animated
 }
 
+enum GenMode {
+  STATIC         // textured mesh, no rig (worker /generate_static)
+  ANIMATED       // rigged + baked idle animation (worker /generate) — D42 productized rigged path
+}
+
 model Asset {
   id        String      @id @default(cuid())
   org       Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -86,6 +91,8 @@ model Asset {
   name      String
   source    AssetSource
   renderKind RenderKind @default(MESH)
+  genMode   GenMode    @default(STATIC)   // what the user requested
+  animated  Boolean    @default(false)    // what the worker actually delivered (rigging can fall back to static)
   status    AssetStatus @default(DRAFT)
 
   // Authoring inputs (e.g. uploaded product image paths / canvas doc); kept small, blobs live in storage.

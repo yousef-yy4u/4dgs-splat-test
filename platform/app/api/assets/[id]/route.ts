@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 // Poll target: returns the asset, advancing it by checking the GPU worker and
 // finalizing (download GLB + bake USDZ) the first time the worker reports done.
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
   const ctx = await ensureUserOrg();
   if (!ctx) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const { id } = await params;
@@ -57,6 +58,8 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     id: asset!.id,
     name: asset!.name,
     status: asset!.status,
+    genMode: asset!.genMode,
+    animated: asset!.animated,
     glbUrl: asset!.glbUrl,
     usdzUrl: asset!.usdzUrl,
     widget: asset!.widgets[0] ?? null,
@@ -64,4 +67,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     progress,
     error: asset!.jobs[0]?.error ?? null,
   });
+  } catch (e) {
+    // Always return JSON (the client polls and parses this) — never an empty/HTML 500 body.
+    console.error("[asset status] handler error", e);
+    return NextResponse.json({ error: "status check failed" }, { status: 500 });
+  }
 }

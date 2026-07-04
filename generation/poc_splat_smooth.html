@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>4dgs — smooth skinned splat PoC (per-splat LBS, walk)</title>
+<style>
+  body { margin:0; overflow:hidden; background:#0b0b10; font:13px/1.4 system-ui,sans-serif; color:#cde; }
+  #hud { position:fixed; top:10px; left:10px; z-index:10; background:#0b0b10cc; border:1px solid #345;
+         border-radius:8px; padding:10px 12px; max-width:380px; }
+  #hud b { color:#9ad; }
+  button { background:#223; color:#cde; border:1px solid #456; border-radius:6px; padding:5px 9px; cursor:pointer; margin:2px 0; }
+  button.on { background:#2a6; color:#031; border-color:#3c8; }
+  label { display:inline-block; min-width:74px; color:#9ab; }
+  #err { color:#f88; white-space:pre-wrap; margin-top:6px; }
+  #stat { color:#8c8; margin-top:6px; }
+  .row { margin-top:5px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>smooth skinned splat</b> — per-splat LBS (each splat skinned by its 4 bone weights), covariance rotated.<br>
+  <div class="row">
+    <button id="bWalk">▶ walk</button>
+    <button id="bMesh">mesh ref: OFF</button>
+    <button id="bSplat" class="on">splat: ON</button>
+    <button id="bFlipK">flip knee</button>
+  </div>
+  <div class="row"><label>speed</label> <input id="spd" type="range" min="0" max="3" step="0.05" value="1.4"><span id="spdv">1.4</span></div>
+  <div class="row"><label>leg swing</label> <input id="leg" type="range" min="0" max="1.0" step="0.02" value="0.5"><span id="legv">0.50</span></div>
+  <div class="row"><label>knee bend</label> <input id="knee" type="range" min="0" max="1.4" step="0.02" value="0.7"><span id="kneev">0.70</span></div>
+  <div class="row"><label>arm swing</label> <input id="arm" type="range" min="0" max="0.8" step="0.02" value="0.35"><span id="armv">0.35</span></div>
+  <div id="stat">loading…</div>
+  <div id="err"></div>
+  <div style="margin-top:8px;color:#789;font-size:11px">
+    SUCCESS CRITERION: under "walk", the splat limbs should bend SMOOTHLY at hips/knees — NO gaps/breaking
+    at joints (the rigid per-bone PoC breaks here; this shouldn't). If knees bend the wrong way, hit "flip knee".
+  </div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "gaussian-splats-3d": "https://naruya.github.io/gaussian-vrm/lib/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as GS3D from 'gaussian-splats-3d';
+
+const $ = id => document.getElementById(id);
+const stat = m => $('stat').textContent = m;
+const fail = m => { $('err').textContent += m + '\n'; console.error(m); };
+
+const ID = new URLSearchParams(location.search).get('id') || 'gen_3a259c3d';
+const GLB_URL = `/out/${ID}_rigged.glb`;
+const SKIN_URL = `/out/${ID}_splat_skinned.ply`;
+const GLB_ROT_X = -Math.PI / 2;
+
+// Limbs are AUTO-DETECTED from skeleton geometry (UniRig bones are unnamed, and the root isn't always
+// the hip). Robust signal: feet = the two lowest leaves on opposite sides; pelvis = their lowest common
+// ancestor; thigh/shin = the bones stepping from pelvis toward each foot. Arms are best-effort.
+function detectLimbs(sk) {
+  const B = sk.skeleton.bones, N = B.length, AX = ['x', 'y', 'z'];
+  const wp = B.map(b => { const v = new THREE.Vector3(); b.getWorldPosition(v); return v; });
+  const setB = new Set(B);
+  const par = B.map(b => (b.parent && setB.has(b.parent)) ? B.indexOf(b.parent) : -1);
+  const mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9];
+  wp.forEach(v => AX.forEach((a, k) => { mn[k] = Math.min(mn[k], v[a]); mx[k] = Math.max(mx[k], v[a]); }));
+  const ext = [mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]];
+  const up = ext.indexOf(Math.max(...ext));
+  const hz = [0, 1, 2].filter(a => a !== up);
+  const lat = ext[hz[0]] >= ext[hz[1]] ? hz[0] : hz[1];
+  const Hof = i => (wp[i][AX[up]] - mn[up]) / (mx[up] - mn[up] + 1e-9);
+  const Lof = i => wp[i][AX[lat]];
+  const kids = Array.from({ length: N }, () => []); par.forEach((p, i) => { if (p >= 0) kids[p].push(i); });
+  const leaves = []; for (let i = 0; i < N; i++) if (!kids[i].length) leaves.push(i);
+  const anc = i => { const o = []; let c = i; while (c >= 0) { o.push(c); c = par[c]; } return o; };
+  const lca = (a, b) => { const A = new Set(anc(a)); for (const x of anc(b)) if (A.has(x)) return x; return -1; };
+  const toward = (a, d) => { const p = anc(d), i = p.indexOf(a); return i > 0 ? p[i - 1] : -1; };
+  const nz = i => (i >= 0 ? i : null);
+  const map = { thighL: null, thighR: null, shinL: null, shinR: null, armL: null, armR: null };
+  const low = [...leaves].sort((u, v) => Hof(u) - Hof(v)).slice(0, 6);
+  const Lf = low.filter(i => Lof(i) < 0), Rf = low.filter(i => Lof(i) > 0);
+  if (Lf.length && Rf.length) {
+    const footL = Lf.reduce((a, b) => Hof(a) < Hof(b) ? a : b), footR = Rf.reduce((a, b) => Hof(a) < Hof(b) ? a : b);
+    const pelvis = lca(footL, footR);
+    const tL = toward(pelvis, footL), tR = toward(pelvis, footR);
+    map.thighL = nz(tL); map.thighR = nz(tR);
+    map.shinL = tL >= 0 ? nz(toward(tL, footL)) : null;
+    map.shinR = tR >= 0 ? nz(toward(tR, footR)) : null;
+    const hands = leaves.filter(i => i !== footL && i !== footR);
+    const HL = hands.filter(i => Lof(i) < 0), HR = hands.filter(i => Lof(i) > 0);
+    if (HL.length && HR.length) {
+      const hL = HL.reduce((a, b) => Math.abs(Lof(a)) > Math.abs(Lof(b)) ? a : b);
+      const hR = HR.reduce((a, b) => Math.abs(Lof(a)) > Math.abs(Lof(b)) ? a : b);
+      const chest = lca(hL, hR), aL = toward(chest, hL), aR = toward(chest, hR);
+      const ok = i => i >= 0 && Math.abs(Lof(i)) > 0.06 && Hof(i) > 0.5;   // reject spine picks
+      if (ok(aL) && ok(aR)) { map.armL = aL; map.armR = aR; }
+    }
+  }
+  const latAxis = new THREE.Vector3(lat === 0 ? 1 : 0, lat === 1 ? 1 : 0, lat === 2 ? 1 : 0);
+  return { map, latAxis };
+}
+
+// ---------- scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0b10);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 100);
+camera.position.set(0, 0, 4);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 1.2));
+const dir = new THREE.DirectionalLight(0xffffff, 1.5); dir.position.set(2, 3, 2); scene.add(dir);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+function wrapFixed(obj, centre, scale, rotX) {
+  const fit = new THREE.Group(); fit.scale.setScalar(scale);
+  fit.position.set(-centre.x * scale, -centre.y * scale, -centre.z * scale); fit.add(obj);
+  const root = new THREE.Group(); root.rotation.x = rotX; root.add(fit); return root;
+}
+
+// ---------- minimal skinned-PLY parser (just need j0..3 / w0..3 in PLY order) ----------
+async function loadSkinWeights(url) {
+  const buf = await (await fetch(url)).arrayBuffer(); const bytes = new Uint8Array(buf);
+  const needle = 'end_header\n'; let he = -1;
+  for (let i = 0; i < bytes.length - needle.length; i++) { let ok = true; for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle.charCodeAt(j)) { ok = false; break; } if (ok) { he = i + needle.length; break; } }
+  const header = new TextDecoder().decode(bytes.subarray(0, he));
+  const le = header.includes('binary_little_endian');
+  const TS = { float: 4, float32: 4, uchar: 1, uint8: 1, double: 8, int: 4, uint: 4, short: 2, ushort: 2 };
+  let count = 0, props = [], off = 0;
+  for (const line of header.split('\n')) { const t = line.trim().split(/\s+/); if (t[0] === 'element' && t[1] === 'vertex') count = +t[2]; else if (t[0] === 'property') { props.push({ name: t[2], type: t[1], off }); off += TS[t[1]] || 4; } }
+  const stride = off, dv = new DataView(buf), pm = {}; props.forEach(p => pm[p.name] = p);
+  if (!pm.j0 || !pm.w0) throw new Error('PLY has no skin weights (j0/w0) — is this the *_splat_skinned.ply?');
+  const sidx = new Float32Array(count * 4), swt = new Float32Array(count * 4);
+  for (let i = 0; i < count; i++) { const b = he + i * stride;
+    for (let k = 0; k < 4; k++) { sidx[i * 4 + k] = dv.getUint16(b + pm['j' + k].off, le); swt[i * 4 + k] = dv.getFloat32(b + pm['w' + k].off, le); }
+  }
+  return { count, sidx, swt };
+}
+
+// pack per-splat 4-vectors into an RGBA float texture, indexed by splat index (PLY order)
+function packTexture(arr4, count, TW) {
+  const TH = Math.ceil(count / TW);
+  const data = new Float32Array(TW * TH * 4);
+  data.set(arr4.subarray(0, count * 4));
+  const tex = new THREE.DataTexture(data, TW, TH, THREE.RGBAFormat, THREE.FloatType);
+  tex.minFilter = THREE.NearestFilter; tex.magFilter = THREE.NearestFilter; tex.needsUpdate = true;
+  return tex;
+}
+
+// ---------- skinning state ----------
+const RIG = { sk: null, bones: null, restLocal: null, swingAxis: {}, viewer: null, splatRoot: null, gltfScene: null };
+let walkOn = false, tAnim = 0, lastT = 0, kneeSign = 1;
+let SPD = 1.4, LEG = 0.5, KNEE = 0.7, ARM = 0.35;
+const _q2 = new THREE.Quaternion(), _xAxis = new THREE.Vector3(1, 0, 0);
+
+// per-frame walk pose (all bones reset to rest, then a few limbs rotated about world-lateral axis)
+function poseWalk(phase) {
+  const b = RIG.bones;
+  for (let i = 0; i < b.length; i++) b[i].quaternion.copy(RIG.restLocal[i]);
+  const swing = (idx, amp, ph) => { if (idx == null) return; _q2.setFromAxisAngle(RIG.swingAxis[idx], amp * Math.sin(phase + ph)); b[idx].quaternion.copy(RIG.restLocal[idx]).multiply(_q2); };
+  const flex  = (idx, amp, ph) => { if (idx == null) return; const a = Math.max(0, Math.sin(phase + ph)); _q2.setFromAxisAngle(RIG.swingAxis[idx], kneeSign * amp * a); b[idx].quaternion.copy(RIG.restLocal[idx]).multiply(_q2); };
+  // legs antiphase; knees flex on the forward-swing half; arms opposite the legs
+  const L = RIG.limb;
+  swing(L.thighR, LEG, 0);        swing(L.thighL, LEG, Math.PI);
+  flex (L.shinR,  KNEE, Math.PI); flex (L.shinL,  KNEE, 0);
+  swing(L.armR,   ARM, Math.PI);  swing(L.armL,   ARM, 0);
+}
+
+function updateSkin() {
+  const sk = RIG.sk;
+  RIG.gltfScene.updateMatrixWorld(true);
+  sk.skeleton.update();
+  if (sk.skeleton.boneTexture) sk.skeleton.boneTexture.needsUpdate = true;   // re-upload posed bone matrices
+  RIG.splatRoot.matrix.copy(sk.matrixWorld);
+}
+
+async function main() {
+  stat('loading rig…');
+  const gltf = await new Promise((res, rej) => new GLTFLoader().load(GLB_URL, res, undefined, rej));
+  gltf.scene.updateMatrixWorld(true);
+  let sk = null, src = null;
+  gltf.scene.traverse(o => { if (o.isSkinnedMesh) sk = o; if (o.isMesh || o.isSkinnedMesh) src = o; });
+  if (!sk || !sk.skeleton || sk.skeleton.bones.length <= 1) { fail('no usable skeleton'); return; }
+  sk.frustumCulled = false;
+  if (!sk.skeleton.boneTexture) sk.skeleton.computeBoneTexture();
+
+  // capture rest pose + per-bone local swing axis (world-lateral X expressed in each bone's rest frame),
+  // while gltf.scene is still at identity (geometry frame; lateral = X from skeleton analysis).
+  RIG.sk = sk; RIG.bones = sk.skeleton.bones;
+  RIG.restLocal = RIG.bones.map(b => b.quaternion.clone());
+  const det = detectLimbs(sk); RIG.limb = det.map;                  // auto-detect legs/arms
+  const wq = new THREE.Quaternion();
+  for (const k in RIG.limb) { const i = RIG.limb[k]; if (i == null) continue; RIG.bones[i].getWorldQuaternion(wq); RIG.swingAxis[i] = det.latAxis.clone().applyQuaternion(wq.clone().invert()).normalize(); }
+  RIG.gltfScene = gltf.scene;
+  console.log('detected limbs:', RIG.limb);
+
+  // fit + show mesh ref (separate from the splat's visibility)
+  const geo = src.geometry.clone(); geo.applyMatrix4(src.matrixWorld); geo.computeBoundingBox();
+  const size = new THREE.Vector3(), centre = new THREE.Vector3();
+  geo.boundingBox.getSize(size); geo.boundingBox.getCenter(centre);
+  const scale = 1.6 / Math.max(size.x, size.y, size.z || 1e-3);
+  const meshGroup = wrapFixed(gltf.scene, centre.clone(), scale, GLB_ROT_X);
+  meshGroup.visible = false; scene.add(meshGroup); meshGroup.updateMatrixWorld(true);
+  sk.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.85, metalness: 0, transparent: true, opacity: 0.5 });
+
+  // splat root mirrors the SkinnedMesh frame (NOT a child of the hidden mesh group)
+  const splatRoot = new THREE.Group(); splatRoot.matrixAutoUpdate = false; splatRoot.matrix.copy(sk.matrixWorld);
+  scene.add(splatRoot); RIG.splatRoot = splatRoot;
+
+  // 2) per-splat skin-weight textures (PLY order == splat data order; optimizeSplatData:false keeps it)
+  stat('loading splat + weights…');
+  const sw = await loadSkinWeights(SKIN_URL);
+  const TW = 2048;
+  const jTex = packTexture(sw.sidx, sw.count, TW);
+  const wTex = packTexture(sw.swt, sw.count, TW);
+
+  // 3) load the FULL skinned splat as ONE mkkellogg scene
+  const viewer = new GS3D.DropInViewer({ sharedMemoryForWorkers: false, dynamicScene: true, sceneRevealMode: 2, sphericalHarmonicsDegree: 0 });
+  try { await viewer.addSplatScenes([{ path: SKIN_URL, splatAlphaRemovalThreshold: 0 }], false); }
+  catch (e) { fail('addSplatScenes failed: ' + (e && e.message || e)); return; }
+  RIG.viewer = viewer; splatRoot.add(viewer);
+
+  // 4) patch the splat material to skin each splat (center + covariance) from its 4 baked bone weights
+  patchSkinning(viewer.splatMesh, sk, jTex, wTex, TW);
+
+  updateSkin();
+  const L = RIG.limb;
+  const legsOK = L.thighL != null && L.thighR != null;
+  stat(`ready — ${sw.count.toLocaleString()} splats, ${RIG.bones.length} bones. ` +
+       (legsOK ? `legs L/R thigh=${L.thighL}/${L.thighR} shin=${L.shinL}/${L.shinR}` + (L.armL != null ? ` arms=${L.armL}/${L.armR}` : ' (no arms)') : '⚠ legs NOT detected — walk will do nothing'));
+
+  // UI
+  $('bWalk').onclick = () => { walkOn = !walkOn; $('bWalk').classList.toggle('on', walkOn); $('bWalk').textContent = walkOn ? '⏸ pause' : '▶ walk'; lastT = 0; };
+  $('bMesh').onclick = () => { meshGroup.visible = !meshGroup.visible; $('bMesh').textContent = 'mesh ref: ' + (meshGroup.visible ? 'ON' : 'OFF'); $('bMesh').classList.toggle('on', meshGroup.visible); };
+  $('bSplat').onclick = () => { viewer.visible = !viewer.visible; $('bSplat').textContent = 'splat: ' + (viewer.visible ? 'ON' : 'OFF'); $('bSplat').classList.toggle('on', viewer.visible); };
+  $('bFlipK').onclick = () => { kneeSign *= -1; };
+  const bind = (id, set) => { $(id).oninput = e => { const v = parseFloat(e.target.value); set(v); $(id + 'v').textContent = v.toFixed(2); }; };
+  bind('spd', v => SPD = v); bind('leg', v => LEG = v); bind('knee', v => KNEE = v); bind('arm', v => ARM = v);
+
+  renderer.setAnimationLoop((now) => {
+    const t = now / 1000; const dt = lastT ? Math.min(t - lastT, 0.05) : 0; lastT = t;
+    if (walkOn) { tAnim += dt * SPD; poseWalk(tAnim); }
+    updateSkin();
+    controls.update();
+    renderer.render(scene, camera);
+  });
+}
+
+// inject per-splat LBS into mkkellogg's SplatMaterial vertex shader (anchors verified present in 0.4.x).
+// Deforms center: splatCenter = D · restCenter, D = bindInverse · (Σ w·boneMatrix) · bindMatrix (geometry-
+// local — same convention as the proven rigid PoC, but per-splat). Rotates covariance: Vrk -> R·Vrk·Rᵀ.
+function patchSkinning(splatMesh, sk, jTex, wTex, TW) {
+  const mat = splatMesh.material = splatMesh.material.clone(); mat.needsUpdate = true;
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.splatSkinIndexTex = { value: jTex };
+    shader.uniforms.splatSkinWeightTex = { value: wTex };
+    shader.uniforms.skinTexW = { value: TW };
+    shader.uniforms.boneTexture = { value: sk.skeleton.boneTexture };
+    shader.uniforms.bindMatrix = { value: sk.bindMatrix };
+    shader.uniforms.bindMatrixInverse = { value: sk.bindMatrixInverse };
+
+    shader.vertexShader = shader.vertexShader.replace('#include <common>', `
+      #include <common>
+      uniform highp sampler2D boneTexture;
+      uniform sampler2D splatSkinIndexTex;
+      uniform sampler2D splatSkinWeightTex;
+      uniform int skinTexW;
+      uniform mat4 bindMatrix;
+      uniform mat4 bindMatrixInverse;
+      mat4 getBone(const in float i) {
+        int sz = textureSize(boneTexture, 0).x; int j = int(i) * 4;
+        int x = j % sz, y = j / sz;
+        return mat4(texelFetch(boneTexture, ivec2(x,y),0),     texelFetch(boneTexture, ivec2(x+1,y),0),
+                    texelFetch(boneTexture, ivec2(x+2,y),0),   texelFetch(boneTexture, ivec2(x+3,y),0));
+      }
+      mat4 splatSkinMatrix(const in uint si) {
+        ivec2 uv = ivec2(int(si) % skinTexW, int(si) / skinTexW);
+        vec4 j = texelFetch(splatSkinIndexTex, uv, 0);
+        vec4 w = texelFetch(splatSkinWeightTex, uv, 0);
+        mat4 sm = w.x*getBone(j.x) + w.y*getBone(j.y) + w.z*getBone(j.z) + w.w*getBone(j.w);
+        return bindMatrixInverse * sm * bindMatrix;   // geometry-local rest -> posed
+      }
+      // pull the PURE ROTATION out of the (possibly sheared, at LBS blends) skin matrix via Gram-Schmidt,
+      // so the covariance only rotates and never shears (shear here = the knee "smearing"). Same column
+      // basis as the input -> rotation direction matches the centre deformation.
+      mat3 orthonormalize(mat3 m) {
+        vec3 c0 = normalize(m[0]);
+        vec3 c1 = normalize(m[1] - dot(m[1], c0) * c0);
+        vec3 c2 = cross(c0, c1);
+        return mat3(c0, c1, c2);
+      }
+    `);
+
+    // deform the centre (D · restCenter) and stash the skinning rotation for the covariance below
+    shader.vertexShader = shader.vertexShader.replace(
+      'vec3 splatCenter = uintBitsToFloat(uvec3(sampledCenterColor.gba));',
+      `vec3 splatCenter = uintBitsToFloat(uvec3(sampledCenterColor.gba));
+       mat4 splatD = splatSkinMatrix(splatIndex);
+       mat3 splatSkinRot = orthonormalize(mat3(splatD));   // pure rotation -> no shear/smear
+       splatCenter = (splatD * vec4(splatCenter, 1.0)).xyz;`
+    );
+
+    // rotate the 3D covariance by the skinning rotation before projection
+    shader.vertexShader = shader.vertexShader.replace(
+      'mat3 cov2Dm = transpose(T) * Vrk * T;',
+      'mat3 cov2Dm = transpose(T) * (splatSkinRot * Vrk * transpose(splatSkinRot)) * T;'
+    );
+  };
+  mat.needsUpdate = true;
+}
+
+main().catch(e => fail('fatal: ' + (e && e.message || e)));
+</script>
+</body>
+</html>

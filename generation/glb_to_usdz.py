@@ -16,12 +16,21 @@ import sys
 import bpy
 
 
-def glb_to_usdz(glb_path: str, usdz_path: str) -> None:
+def glb_to_usdz(glb_path: str, usdz_path: str, animation: bool = False) -> None:
     # Clean scene.
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
     # Import the GLB (glTF is Y-up; Blender is Z-up — the importer handles the convert).
     bpy.ops.import_scene.gltf(filepath=glb_path)
+
+    # AR Quick Look plays ONE animation track (D39) — set a sane playback range from the
+    # imported action so the baked idle clip loops in AR Quick Look.
+    if animation:
+        end = 1
+        for a in bpy.data.actions:
+            end = max(end, int(a.frame_range[1]))
+        bpy.context.scene.frame_start = 1
+        bpy.context.scene.frame_end = end
 
     # Export USDZ. AR Quick Look wants Y-up + meters; Blender's USD exporter applies the
     # Z-up -> Y-up convention and packages a .usdz when the path ends in .usdz.
@@ -29,6 +38,7 @@ def glb_to_usdz(glb_path: str, usdz_path: str) -> None:
         filepath=usdz_path,
         export_textures=True,
         export_materials=True,
+        export_animation=animation,   # carry the rigged idle clip into AR Quick Look
         use_instancing=False,
         convert_orientation=True,
         export_global_forward_selection="NEGATIVE_Z",
@@ -37,9 +47,11 @@ def glb_to_usdz(glb_path: str, usdz_path: str) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("usage: glb_to_usdz.py <in.glb> <out.usdz>", file=sys.stderr)
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    animation = "--animation" in sys.argv
+    if len(args) < 2:
+        print("usage: glb_to_usdz.py <in.glb> <out.usdz> [--animation]", file=sys.stderr)
         sys.exit(2)
-    glb, usdz = sys.argv[1], sys.argv[2]
-    glb_to_usdz(glb, usdz)
+    glb, usdz = args[0], args[1]
+    glb_to_usdz(glb, usdz, animation=animation)
     print(f"wrote {usdz}")

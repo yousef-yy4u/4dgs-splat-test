@@ -18,7 +18,29 @@ export type GenStatus = {
   nviews: number;
 };
 
-export async function submitGeneration(images: Blob[]): Promise<{ jobId: string; nviews: number }> {
+// The worker's /generate result (rigged path). /generate_static returns just { glb, textured }.
+export type GenResult = {
+  glb: string;            // /out/<file>.glb (rigged GLB for animated; textured GLB for static)
+  name: string;
+  textured?: boolean;     // static path
+  splat?: string;         // rigged path: decimated splat ply
+  splat_skinned?: string | null; // rigged path: rig-bound splat (animated-splat hero tier, later)
+  rig_ok?: boolean;       // rigged path: false => rigging fell back to a plain (un-animated) mesh
+  bones?: number;
+  note?: string;
+};
+
+// rig-agnostic motion-library presets the worker can bake (D42). "wave"/"walk" etc. need bone
+// labels + retargeting and come later.
+export const MOTIONS = ["idle", "sway", "bob", "spin", "float"] as const;
+export type Motion = (typeof MOTIONS)[number];
+
+// mode "static" -> /generate_static (textured mesh, no rig); "animated" -> /generate (rigged + chosen motion).
+export async function submitGeneration(
+  images: Blob[],
+  mode: "static" | "animated" = "static",
+  motion: Motion = "idle",
+): Promise<{ jobId: string; nviews: number }> {
   const form = new FormData();
   // MUST pass a filename — Flask only treats multipart parts WITH a filename as files
   // (request.files); a nameless Blob lands in request.form and the worker sees no image.
@@ -26,10 +48,12 @@ export async function submitGeneration(images: Blob[]): Promise<{ jobId: string;
     const filename = img instanceof File ? img.name : "upload.png";
     form.append("images", img, filename);
   }
-  // /generate_static = textured static GLB (mesh-first, gsplat+nvdiffrast bake) for the
-  // un-anchored "view in 3D" product surface. (/generate is the rigging path for the studio.)
-  const res = await fetch(`${WORKER_URL}/generate_static`, { method: "POST", body: form });
-  if (!res.ok) throw new Error(`worker /generate ${res.status}: ${await res.text()}`);
+  if (mode === "animated") form.append("motion", motion);
+  // /generate_static = textured static GLB (mesh-first, gsplat+nvdiffrast bake);
+  // /generate = the rigging path (TRELLIS->UniRig->bind_splat) productized for the "animated" surface (D42).
+  const endpoint = mode === "animated" ? "/generate" : "/generate_static";
+  const res = await fetch(`${WORKER_URL}${endpoint}`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`worker ${endpoint} ${res.status}: ${await res.text()}`);
   const json = (await res.json()) as { job_id: string; nviews: number };
   return { jobId: json.job_id, nviews: json.nviews };
 }

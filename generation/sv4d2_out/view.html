@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SV4D2 — camel — novel-view outputs</title>
+<style>
+  body { margin:0; background:#0b0b10; color:#cde; font:14px/1.5 system-ui,sans-serif; padding:16px; }
+  h1 { font-size:16px; color:#9ad; margin:0 0 4px; }
+  p  { color:#9ab; margin:0 0 16px; max-width:720px; }
+  .grid { display:flex; flex-wrap:wrap; gap:14px; }
+  .cell { background:#111820; border:1px solid #345; border-radius:10px; padding:8px; }
+  .cell video { width:260px; height:260px; background:#000; border-radius:6px; display:block; image-rendering:pixelated; }
+  .cell .lbl { margin-top:6px; text-align:center; font-size:12px; color:#9ab; }
+  .cell.input { border-color:#3c8; }
+  .cell.input .lbl { color:#7e7; }
+  .controls { margin:14px 0; }
+  button { background:#223; color:#cde; border:1px solid #456; border-radius:7px; padding:7px 12px; cursor:pointer; }
+</style>
+</head>
+<body>
+  <h1>SV4D2 → camel.gif → novel-view videos</h1>
+  <p>The green tile is the <b>input</b> view. The others are <b>generated</b> novel camera angles.
+     Judge: (1) does each view look like a coherent 3D camel from that angle, and
+     (2) does the <b>motion stay in sync across all views</b> (the key spatio-temporal consistency SV4D2 is supposed to give us — it's what makes a clean Stage-B 4D fit possible).</p>
+  <div class="controls"><button id="sync">⟲ restart all in sync</button> &nbsp; <span id="note" style="color:#789"></span></div>
+  <div class="grid" id="grid"></div>
+<script>
+  const files = [
+    ['000000_process_input.mp4','input view'],
+    ['000000_v001.mp4','novel view 1'],
+    ['000000_v002.mp4','novel view 2'],
+    ['000000_v003.mp4','novel view 3'],
+    ['000000_v004.mp4','novel view 4'],
+  ];
+  const grid = document.getElementById('grid'); const vids = [];
+  for (const [f,l] of files) {
+    const c = document.createElement('div'); c.className = 'cell' + (l==='input view'?' input':'');
+    const v = document.createElement('video');
+    v.src = f; v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true; v.controls = false;
+    const d = document.createElement('div'); d.className='lbl'; d.textContent = l;
+    c.appendChild(v); c.appendChild(d); grid.appendChild(c); vids.push(v);
+  }
+  document.getElementById('sync').onclick = () => vids.forEach(v => { v.currentTime = 0; v.play(); });
+</script>
+</body>
+</html>

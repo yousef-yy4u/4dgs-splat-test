@@ -7,9 +7,15 @@ import { stat } from "node:fs/promises";
 const BPY_PYTHON = process.env.BPY_PYTHON ?? "/home/sov2/projects/unirig-venv/bin/python";
 const GLB_TO_USDZ = process.env.GLB_TO_USDZ ?? "/home/sov2/projects/4dgs/generation/glb_to_usdz.py";
 
-export function bakeUsdz(glbPath: string, usdzPath: string): Promise<void> {
+export function bakeUsdz(
+  glbPath: string,
+  usdzPath: string,
+  opts: { animation?: boolean } = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(BPY_PYTHON, [GLB_TO_USDZ, glbPath, usdzPath]);
+    const args = [GLB_TO_USDZ, glbPath, usdzPath];
+    if (opts.animation) args.push("--animation");
+    const proc = spawn(BPY_PYTHON, args);
     let err = "";
     proc.stderr.on("data", (d) => (err += d.toString()));
     proc.on("error", reject);

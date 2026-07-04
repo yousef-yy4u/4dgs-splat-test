@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>4dgs — animated splat PoC (mkkellogg + per-bone rigid skinning)</title>
+<style>
+  body { margin:0; overflow:hidden; background:#0b0b10; font:13px/1.4 system-ui,sans-serif; color:#cde; }
+  #hud { position:fixed; top:10px; left:10px; z-index:10; background:#0b0b10cc; border:1px solid #345;
+         border-radius:8px; padding:10px 12px; max-width:360px; }
+  #hud b { color:#9ad; }
+  button { background:#223; color:#cde; border:1px solid #456; border-radius:6px; padding:5px 9px; cursor:pointer; margin:2px 0; }
+  button.on { background:#2a6; color:#031; border-color:#3c8; }
+  #err { color:#f88; white-space:pre-wrap; margin-top:6px; }
+  #stat { color:#8c8; margin-top:6px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>animated splat PoC</b> — real anisotropic 3DGS (mkkellogg) skinned per-bone by the rig.<br>
+  <div style="margin-top:8px">
+    <button id="bAnim">▶ animate (sway)</button>
+    <button id="bMesh">mesh ref: OFF</button>
+    <button id="bSplat" class="on">splat: ON</button>
+  </div>
+  <div style="margin-top:8px">
+    sway amount: <input id="amp" type="range" min="0" max="0.4" step="0.01" value="0.06" style="vertical-align:middle">
+    <span id="ampv">0.06</span>
+  </div>
+  <div id="stat">loading…</div>
+  <div id="err"></div>
+  <div style="margin-top:8px;color:#789;font-size:11px">
+    VALIDATE: (1) splat shows ELLIPSOIDS not dots; (2) it's upright &amp; oriented like the mesh ref
+    (else bind_splat.py quaternion convention is off); (3) animate → splat limbs follow the skeleton,
+    aligned with the mesh ref (seams at joints are expected — rigid per-bone).
+  </div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "gaussian-splats-3d": "https://naruya.github.io/gaussian-vrm/lib/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as GS3D from 'gaussian-splats-3d';
+
+const $ = id => document.getElementById(id);
+const stat = m => $('stat').textContent = m;
+const fail = m => { $('err').textContent += m + '\n'; console.error(m); };
+
+// asset + paths (server serves studio_out at /out/). Override with ?id=gen_XXXXXXXX
+const ID = new URLSearchParams(location.search).get('id') || 'gen_3594c97a';
+const SHORT = ID.replace(/^gen_/, '');
+const GLB_URL = `/out/${ID}_rigged.glb`;
+const POC_DIR = `/out/poc_${SHORT}`;
+
+// same orientation convention as studio.html: GLB (mesh frame) is Z-up -> tilt -90°X to stand upright.
+const GLB_ROT_X = -Math.PI / 2;
+
+// ---------- scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0b10);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.01, 100);
+camera.position.set(0, 0, 4);
+const controls = new OrbitControls(camera, renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x333344, 1.2));
+const dir = new THREE.DirectionalLight(0xffffff, 1.5); dir.position.set(2, 3, 2); scene.add(dir);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+// centre+scale+tilt a (geometry-frame) object exactly like studio's wrapFixed: world = Rx · s · (p − centre)
+function wrapFixed(obj, centre, scale, rotX) {
+  const fit = new THREE.Group();
+  fit.scale.setScalar(scale);
+  fit.position.set(-centre.x * scale, -centre.y * scale, -centre.z * scale);
+  fit.add(obj);
+  const root = new THREE.Group(); root.rotation.x = rotX; root.add(fit);
+  return root;
+}
+
+// ---------- animation state ----------
+const RIG = { sk: null, bones: null, rest: null, sceneBones: [], viewer: null };
+let animOn = false, tAnim = 0, lastT = 0, AMP = 0.06;   // AMP in radians per joint (gentle by default)
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), AX = [new THREE.Vector3(1,0,0), new THREE.Vector3(0,1,0), new THREE.Vector3(0,0,1)];
+const _D = new THREE.Matrix4(), _bm = new THREE.Matrix4(), _p = new THREE.Vector3(), _qq = new THREE.Quaternion(), _s = new THREE.Vector3();
+
+// sway the bones (same recipe as studio.html animTick): rest · small per-bone oscillation, skip root.
+function animateBones(dt) {
+  tAnim += dt;
+  for (let i = 0; i < RIG.bones.length; i++) {
+    _q.copy(RIG.rest[i]);
+    if (i > 0 && AMP > 0) { const off = AMP * Math.sin(tAnim * (1 + (i % 5) * 0.15) + i * 0.7); _q2.setFromAxisAngle(AX[i % 3], off); _q.multiply(_q2); }
+    RIG.bones[i].quaternion.copy(_q);
+  }
+}
+
+// per-bone-group rigid skin: D_b = bindMatrixInverse · boneMatrices[b] · bindMatrix  (geometry-local,
+// the SAME transform studio's per-point dot shader applies — here applied to a whole splat-scene at once).
+function updateSplatTransforms() {
+  const sk = RIG.sk;
+  RIG.gltfScene.updateMatrixWorld(true);                  // refresh bone.matrixWorld from the new quaternions
+  sk.skeleton.update();                                   // recompute boneMatrices from the posed bones
+  RIG.splatRoot.matrix.copy(sk.matrixWorld);             // keep splat root glued to the SkinnedMesh frame
+  for (let i = 0; i < RIG.sceneBones.length; i++) {
+    const b = RIG.sceneBones[i];
+    _bm.fromArray(sk.skeleton.boneMatrices, b * 16);
+    _D.multiplyMatrices(sk.bindMatrixInverse, _bm).multiply(sk.bindMatrix);
+    _D.decompose(_p, _qq, _s);
+    const sp = RIG.viewer.getSplatScene(i);
+    if (sp) { sp.position.copy(_p); sp.quaternion.copy(_qq); sp.scale.copy(_s); }
+  }
+}
+
+async function main() {
+  // 1) load rig
+  stat('loading rig…');
+  const gltf = await new Promise((res, rej) => new GLTFLoader().load(GLB_URL, res, undefined, rej));
+  gltf.scene.updateMatrixWorld(true);
+  let sk = null, src = null;
+  gltf.scene.traverse(o => { if (o.isSkinnedMesh) sk = o; if (o.isMesh || o.isSkinnedMesh) src = o; });
+  if (!sk || !sk.skeleton || sk.skeleton.bones.length <= 1) { fail('no usable skeleton in GLB'); return; }
+  sk.frustumCulled = false;
+
+  // fit transform from the rest mesh bbox (same as studio)
+  const geo = src.geometry.clone(); geo.applyMatrix4(src.matrixWorld); geo.computeBoundingBox();
+  const size = new THREE.Vector3(), centre = new THREE.Vector3();
+  geo.boundingBox.getSize(size); geo.boundingBox.getCenter(centre);
+  const scale = 1.6 / Math.max(size.x, size.y, size.z || 1e-3);
+
+  RIG.sk = sk; RIG.bones = sk.skeleton.bones; RIG.rest = RIG.bones.map(b => b.quaternion.clone());
+  RIG.gltfScene = gltf.scene;
+
+  // show the deforming SkinnedMesh as a reference (toggle); wrapFixed positions it like the splat
+  const meshGroup = wrapFixed(gltf.scene, centre.clone(), scale, GLB_ROT_X);
+  meshGroup.visible = false; scene.add(meshGroup);
+  meshGroup.updateMatrixWorld(true);                       // so sk.matrixWorld is valid for the splat root
+  sk.material = new THREE.MeshStandardMaterial({ color: 0x9aa6b2, roughness: 0.85, metalness: 0, transparent: true, opacity: 0.5 });
+  $('bMesh').onclick = () => { meshGroup.visible = !meshGroup.visible; $('bMesh').textContent = 'mesh ref: ' + (meshGroup.visible ? 'ON' : 'OFF'); $('bMesh').classList.toggle('on', meshGroup.visible); };
+
+  // splat root: a SEPARATE node (NOT a child of the mesh group, so the mesh-ref toggle can't hide it)
+  // whose world matrix mirrors the SkinnedMesh — the splats then share the mesh's frame exactly, and the
+  // per-bone D_b (geometry-local) animates them. Avoids nesting a DropInViewer under a SkinnedMesh.
+  const splatRoot = new THREE.Group();
+  splatRoot.matrixAutoUpdate = false;
+  splatRoot.matrix.copy(sk.matrixWorld);
+  scene.add(splatRoot);
+  RIG.splatRoot = splatRoot;
+
+  // 2) load per-bone splat scenes
+  stat('loading splat scenes…');
+  const manifest = await (await fetch(`${POC_DIR}/manifest.json`)).json();
+  const viewer = new GS3D.DropInViewer({   // options mirror gaussian-vrm's proven config
+    sharedMemoryForWorkers: false,   // simple single-file hosting (no COOP/COEP needed)
+    dynamicScene: true,              // we move scenes every frame
+    sceneRevealMode: 2,              // Instant — show splats immediately (no fade-in)
+    sphericalHarmonicsDegree: 0,     // our splats are DC-only (no f_rest_*)
+  });
+  const sceneOptions = manifest.bones.map(bb => ({ path: `${POC_DIR}/${bb.file}`, splatAlphaRemovalThreshold: 0 }));
+  RIG.sceneBones = manifest.bones.map(bb => bb.bone);     // scene index i -> bone index
+  try {
+    await viewer.addSplatScenes(sceneOptions, false);
+  } catch (e) { fail('addSplatScenes failed: ' + (e && e.message || e)); return; }
+  RIG.viewer = viewer;
+  splatRoot.add(viewer);                                  // splat shares the SkinnedMesh frame via splatRoot
+  updateSplatTransforms();                                // place at rest
+
+  const got = viewer.getSplatScene ? RIG.sceneBones.length : 0;
+  stat(`ready — ${manifest.total.toLocaleString()} splats over ${got} bone scenes (loaded)`);
+
+  // 3) loop
+  $('bAnim').onclick = () => { animOn = !animOn; $('bAnim').classList.toggle('on', animOn); $('bAnim').textContent = (animOn ? '⏸ pause' : '▶ animate (sway)'); lastT = 0; };
+  $('bSplat').onclick = () => { viewer.visible = !viewer.visible; $('bSplat').textContent = 'splat: ' + (viewer.visible ? 'ON' : 'OFF'); $('bSplat').classList.toggle('on', viewer.visible); };
+  $('amp').oninput = e => { AMP = parseFloat(e.target.value); $('ampv').textContent = AMP.toFixed(2); };
+
+  renderer.setAnimationLoop((now) => {
+    const t = now / 1000; const dt = lastT ? Math.min(t - lastT, 0.05) : 0; lastT = t;
+    if (animOn) { animateBones(dt * 0.5); }   // slower, calmer sway
+    updateSplatTransforms();      // also runs when paused so manual orbit stays consistent
+    controls.update();
+    renderer.render(scene, camera);
+  });
+}
+
+main().catch(e => fail('fatal: ' + (e && e.message || e)));
+</script>
+</body>
+</html>

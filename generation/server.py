@@ -92,7 +92,7 @@ def run_unirig(script, args, tag, job):
     print(f"[{job[:8]}] unirig {tag} rc={p.returncode}", flush=True)
     return p.returncode == 0, tail
 
-def pipeline(job, image_paths, name):
+def pipeline(job, image_paths, name, motion='idle'):
     """The full image(s) -> rigged asset pipeline. Updates JOBS[job] as it goes."""
     with PIPE_LOCK:
         pipe = load_pipe()
@@ -114,6 +114,23 @@ def pipeline(job, image_paths, name):
                         faces=m.faces.detach().cpu().numpy(), process=False).export(mesh_obj)
         out['gaussian'][0].save_ply(splat_ply)
         log(job, 'TRELLIS done', 40, f'{time.time()-t:.0f}s')
+
+        # textured mesh via the PROVEN to_glb path (good xatlas UVs + clean gsplat+nvdiffrast bake,
+        # same as the static product). We transfer the rig onto THIS later, instead of baking onto
+        # the rigged mesh's fragmented auto-UVs (D42). Best-effort.
+        textured_glb = os.path.join(GEN_OUT, f'{name}_textured.glb')
+        try:
+            log(job, 'bake texture', 45)
+            import gsplat_render
+            gsplat_render.patch()
+            gsplat_render.inflate_scales(out["gaussian"][0])  # fill sub-pixel gaps in the bake
+            from trellis.utils import postprocessing_utils
+            tg = postprocessing_utils.to_glb(out['gaussian'][0], out['mesh'][0],
+                                             simplify=0.95, texture_size=1024, verbose=False)
+            tg.export(textured_glb)
+        except Exception as e:
+            textured_glb = None
+            print(f"[{job[:8]}] to_glb texture failed: {e}", flush=True)
 
         # 2. mesh cleanup (rig-readiness)
         log(job, 'clean mesh', 50)
@@ -152,8 +169,10 @@ def pipeline(job, image_paths, name):
 
             # 5. assemble rigged GLB
             log(job, 'assemble', 90)
+            # pass the decimated splat (vertex colour) + the chosen motion preset to prep_viewer
             subprocess.run([UNIRIG_PY, os.path.join(GEN, 'prep_viewer.py'),
-                            os.path.join(UNIRIG, skin_fbx), glb], capture_output=True, text=True)
+                            os.path.join(UNIRIG, skin_fbx), glb, web_splat, motion],
+                           capture_output=True, text=True)
             if not os.path.exists(glb):
                 raise RuntimeError('GLB assembly failed')
             nbones = glb_joint_count(glb)
@@ -185,6 +204,20 @@ def pipeline(job, image_paths, name):
             else:
                 print(f"[{job[:8]}] splat-bind failed: {r.stderr[-300:]}", flush=True)
 
+            # 7. transfer the rig onto the PROVEN textured mesh (correct UVs) instead of baking onto
+            #    the rigged mesh's fragmented auto-UVs. Best-effort — on failure the vertex-coloured
+            #    rigged GLB stays.
+            if textured_glb and os.path.exists(textured_glb):
+                log(job, 'apply texture', 97)
+                glb_tex = os.path.join(RESULTS, f'{name}_rigged_tex.glb')
+                rt = subprocess.run([UNIRIG_PY, os.path.join(GEN, 'transfer_rig.py'),
+                                     glb, textured_glb, glb_tex], capture_output=True, text=True)
+                if os.path.exists(glb_tex):
+                    shutil.move(glb_tex, glb)   # swap in the textured + rigged GLB
+                    print(f"[{job[:8]}] rig transferred onto textured mesh", flush=True)
+                else:
+                    print(f"[{job[:8]}] transfer_rig failed: {rt.stderr[-400:]}", flush=True)
+
         JOBS[job]['result'] = {
             'glb': f'/out/{name}_rigged.glb',
             'splat': f'/out/{name}_splat.ply',
@@ -192,14 +225,15 @@ def pipeline(job, image_paths, name):
             'name': name,
             'rig_ok': rig_ok,
             'bones': nbones,
+            'motion': motion if rig_ok else None,
             'note': rig_msg,
         }
         log(job, 'done', 100, '' if rig_ok else f'(rig warning: {rig_msg})')
         JOBS[job]['done'] = True
 
-def worker(job, image_paths, name):
+def worker(job, image_paths, name, motion='idle'):
     try:
-        pipeline(job, image_paths, name)
+        pipeline(job, image_paths, name, motion)
     except Exception as e:
         traceback.print_exc()
         JOBS[job].update(error=str(e), done=True)
@@ -222,17 +256,10 @@ def pipeline_static(job, image_paths, name):
         # for gsplat (Apache-2.0) before to_glb renders the gaussian for baking.
         import gsplat_render
         gsplat_render.patch()
+        gsplat_render.inflate_scales(out["gaussian"][0])  # fill sub-pixel gaps in the bake
         from trellis.utils import postprocessing_utils
         glb = postprocessing_utils.to_glb(out['gaussian'][0], out['mesh'][0],
                                           simplify=0.95, texture_size=1024, verbose=False)
-        # to_glb leaves metallicFactor unset -> glTF default 1.0 (fully metallic) -> the model
-        # renders BLACK wherever it doesn't catch bright env light (top/bottom). These are matte
-        # products, not chrome: force dielectric.
-        try:
-            glb.visual.material.metallicFactor = 0.0
-            glb.visual.material.roughnessFactor = 1.0
-        except Exception as e:
-            print(f"[{job[:8]}] could not set metallicFactor: {e}", flush=True)
         out_glb = os.path.join(RESULTS, f'{name}_textured.glb')
         glb.export(out_glb)
         JOBS[job]['result'] = {'glb': f'/out/{name}_textured.glb', 'name': name, 'textured': True}
@@ -271,13 +298,14 @@ def generate():
         return jsonify(error='no images uploaded'), 400
     job = uuid.uuid4().hex
     name = 'gen_' + job[:8]
+    motion = (request.form.get('motion') or 'idle').strip()
     paths = []
     for i, f in enumerate(files):
         p = os.path.join(UPLOADS, f'{name}_{i}.png')
         Image.open(f.stream).convert('RGBA').save(p)
         paths.append(p)
     JOBS[job] = dict(stage='queued', pct=0, done=False, error=None, result=None, nviews=len(paths))
-    threading.Thread(target=worker, args=(job, paths, name), daemon=True).start()
+    threading.Thread(target=worker, args=(job, paths, name, motion), daemon=True).start()
     return jsonify(job_id=job, nviews=len(paths))
 
 @app.route('/generate_static', methods=['POST'])

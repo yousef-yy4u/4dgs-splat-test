@@ -55,6 +55,23 @@ def _gsplat_render(self, gaussian, extrinsics, intrinsics, colors_overwrite=None
     return edict({"color": img})
 
 
+def inflate_scales(gaussian, target_frac=0.012, max_factor=20.0):
+    """Grow splats (in place) to ~`target_frac` of the object extent so the surface renders densely
+    for texture baking. TRELLIS splats are often ~1e-3 → sub-pixel at 1024², leaving black holes
+    that darken the bake. ADAPTIVE: sparse gaussians get inflated a lot, already-dense ones barely
+    (so we don't over-blur e.g. a crate). get_scaling = exp(_scaling+bias) → += log(factor) scales it."""
+    with torch.no_grad():
+        xyz = gaussian.get_xyz
+        extent = float((xyz.max(0).values - xyz.min(0).values).max())
+        med = float(gaussian.get_scaling.median())
+        if med <= 0 or extent <= 0:
+            return 1.0
+        factor = min(max_factor, max(1.0, target_frac * extent / med))
+        if factor > 1.0:
+            gaussian._scaling = gaussian._scaling + float(np.log(factor))
+        return factor
+
+
 _PATCHED = False
 
 

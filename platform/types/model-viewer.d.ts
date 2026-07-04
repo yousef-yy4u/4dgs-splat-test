@@ -18,6 +18,8 @@ declare module "react" {
           "shadow-intensity"?: string;
           "touch-action"?: string;
           exposure?: string;
+          autoplay?: boolean;
+          "animation-name"?: string;
         },
         HTMLElement
       >;

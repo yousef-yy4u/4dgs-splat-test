@@ -1,3 +1,20 @@
 node_modules/
 *.log
 .DS_Store
+
+# --- planning-first repo: exclude generated model blobs + build artifacts ---
+platform/storage/
+platform/.next/
+platform/node_modules/
+platform/dev.db
+generation/out/
+generation/studio_out/
+generation/studio_uploads/
+generation/library/
+generation/inputs/
+**/__pycache__/
+*.pyc
+*.safetensors
+*.pth
+*.ckpt
+*.onnx

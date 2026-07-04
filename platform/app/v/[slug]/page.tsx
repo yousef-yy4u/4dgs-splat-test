@@ -27,7 +27,8 @@ export default async function ViewerPage({ params }: { params: Promise<{ slug: s
           ar
           ar-modes="webxr scene-viewer quick-look"
           camera-controls
-          auto-rotate
+          auto-rotate={!a.animated}
+          autoplay={a.animated || undefined}
           shadow-intensity="1"
           touch-action="pan-y"
           style={{ width: "100%", height: "100%", backgroundColor: "#f4f4f5" }}

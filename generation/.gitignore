@@ -5,3 +5,7 @@ studio_out/
 studio_uploads/
 
 library/
+
+# local API keys (never commit)
+.env
+*.env

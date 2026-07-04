@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>4dgs — phone splat playback test</title>
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#0b0b10;
+              font:13px/1.35 system-ui,sans-serif; color:#cde; -webkit-text-size-adjust:100%; }
+  #hud { position:fixed; top:8px; left:8px; right:8px; z-index:10; background:#0b0b10dd;
+         border:1px solid #345; border-radius:10px; padding:9px 11px; }
+  #fps { font-size:30px; font-weight:700; line-height:1; }
+  #fps small { font-size:13px; font-weight:400; color:#9ab; }
+  .warn { color:#fb6 !important; } .good { color:#7e7 !important; } .bad { color:#f77 !important; }
+  #meta { color:#9ab; margin-top:5px; font-size:12px; }
+  .row { margin-top:7px; }
+  button, select { background:#223; color:#cde; border:1px solid #456; border-radius:7px;
+                   padding:7px 10px; font-size:13px; cursor:pointer; margin:2px 3px 2px 0; }
+  button.on { background:#2a6; color:#031; border-color:#3c8; }
+  #note { color:#789; font-size:11px; margin-top:7px; }
+  #err { color:#f88; white-space:pre-wrap; margin-top:6px; font-size:12px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="fps">— <small>fps</small></div>
+  <div id="meta">loading…</div>
+  <div class="row">
+    <button id="bOrbit" class="on">⟳ auto-orbit: ON</button>
+    <button id="bRic">min/avg/max: reset</button>
+  </div>
+  <div class="row">
+    asset:
+    <select id="selAsset">
+      <option value="/benchmark/assets/robot_crab_200k.ply">robot_crab — 200k</option>
+      <option value="/benchmark/assets/human_200k.ply">human — 200k</option>
+      <option value="/benchmark/assets/butterfly_184k.ply">butterfly — 184k</option>
+      <option value="/benchmark/assets/Shu2Edited.ply">Shu2 — ~245k</option>
+      <option value="/generation/library/assets/gen_4945cd2a/splat.ply">gen_4945cd2a — ~270k</option>
+    </select>
+  </div>
+  <div class="row">
+    copies: <button data-copies="1" class="cp on">×1</button><button data-copies="2" class="cp">×2</button><button data-copies="3" class="cp">×3</button>
+    &nbsp; DPR: <button data-dpr="1" class="dp">1.0</button><button data-dpr="1.5" class="dp">1.5</button><button data-dpr="2" class="dp on">2.0</button>
+  </div>
+  <div id="note">
+    Measures the FLOOR: render + continuous depth re-sort of a real splat (the mobile bottleneck).
+    A true 4D asset adds per-frame deformation on top. <b>Watch the avg, then leave it running 2+ min</b> —
+    if fps decays as the phone heats, that's thermal throttling (the real killer). Try ×2/×3 to push toward a
+    multi-object scene budget; raise DPR to test fill-rate.
+  </div>
+  <div id="err"></div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/",
+    "gaussian-splats-3d": "https://naruya.github.io/gaussian-vrm/lib/gaussian-splats-3d.module.js"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as GS3D from 'gaussian-splats-3d';
+
+const $ = id => document.getElementById(id);
+const qp = new URLSearchParams(location.search);
+const fail = m => { $('err').textContent += m + '\n'; console.error(m); };
+
+const ASSET  = qp.get('asset')  || '/benchmark/assets/robot_crab_200k.ply';
+const COPIES = Math.max(1, Math.min(4, parseInt(qp.get('copies') || '1')));
+const DPR    = Math.max(1, Math.min(3, parseFloat(qp.get('dpr') || '2')));
+
+// reflect current params into the buttons
+$('selAsset').value = ASSET;
+document.querySelectorAll('.cp').forEach(b => b.classList.toggle('on', +b.dataset.copies === COPIES));
+document.querySelectorAll('.dp').forEach(b => b.classList.toggle('on', +b.dataset.dpr === DPR));
+const reload = (k, v) => { qp.set(k, v); location.search = qp.toString(); };
+$('selAsset').onchange = e => reload('asset', e.target.value);
+document.querySelectorAll('.cp').forEach(b => b.onclick = () => reload('copies', b.dataset.copies));
+document.querySelectorAll('.dp').forEach(b => b.onclick = () => reload('dpr', b.dataset.dpr));
+
+// ---------- scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setPixelRatio(DPR);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0b0b10);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.05, 500);
+camera.position.set(0, 0, 4);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.autoRotate = true; controls.autoRotateSpeed = 3.0;
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+let orbitOn = true;
+$('bOrbit').onclick = () => { orbitOn = !orbitOn; controls.autoRotate = orbitOn;
+  $('bOrbit').classList.toggle('on', orbitOn); $('bOrbit').textContent = '⟳ auto-orbit: ' + (orbitOn ? 'ON' : 'OFF'); };
+
+// ---------- fps meter ----------
+let last = 0, ema = 0, fMin = 1e9, fMax = 0, samples = 0;
+$('bRic').onclick = () => { fMin = 1e9; fMax = 0; samples = 0; };
+function meter(now) {
+  if (last) {
+    const dt = now - last; if (dt > 0) {
+      const f = 1000 / dt;
+      ema = ema ? ema * 0.9 + f * 0.1 : f;
+      if (++samples > 20) { fMin = Math.min(fMin, ema); fMax = Math.max(fMax, ema); }   // skip warmup
+    }
+  }
+  last = now;
+  const cls = ema >= 50 ? 'good' : ema >= 28 ? 'warn' : 'bad';
+  $('fps').innerHTML = `<span class="${cls}">${ema.toFixed(0)}</span> <small>fps &nbsp; ${(ema?1000/ema:0).toFixed(1)} ms/frame</small>`;
+  if (samples > 20) $('fps').innerHTML += `<small> &nbsp; (min ${fMin.toFixed(0)} / max ${fMax.toFixed(0)})</small>`;
+}
+
+const devPx = `${Math.round(innerWidth*DPR)}×${Math.round(innerHeight*DPR)}`;
+
+async function main() {
+  const viewer = new GS3D.DropInViewer({
+    sharedMemoryForWorkers: false,   // no COOP/COEP needed → plain http server works
+    sphericalHarmonicsDegree: 0,
+    dynamicScene: false,
+  });
+  // N copies of the same asset, spread along x so all of them actually rasterize (multi-object budget)
+  const scenes = [];
+  for (let i = 0; i < COPIES; i++) {
+    const x = (i - (COPIES - 1) / 2) * 2.2;
+    scenes.push({ path: ASSET, splatAlphaRemovalThreshold: 5, position: [x, 0, 0] });
+  }
+  $('meta').textContent = `loading ${COPIES}× ${ASSET.split('/').pop()} …`;
+  try { await viewer.addSplatScenes(scenes, false); }
+  catch (e) { fail('addSplatScenes failed: ' + (e && e.message || e)); return; }
+  scene.add(viewer);
+
+  // report real splat count
+  let total = 0;
+  try {
+    const sm = viewer.getSplatMesh ? viewer.getSplatMesh() : viewer.splatMesh;
+    total = sm && sm.getSplatCount ? sm.getSplatCount() : 0;
+  } catch (e) {}
+  const meta = `${total ? total.toLocaleString() : '?'} splats on screen · ${COPIES}×${ASSET.split('/').pop()} · ${devPx}px (DPR ${DPR}) · ${navigator.userAgent.match(/(iPhone|iPad|Android|Macintosh|Windows)[^)]*/)?.[0] || 'device'}`;
+  $('meta').textContent = meta;
+
+  renderer.setAnimationLoop((now) => {
+    controls.update();
+    renderer.render(scene, camera);
+    meter(now);
+  });
+}
+main().catch(e => fail('fatal: ' + (e && e.message || e)));
+</script>
+</body>
+</html>
