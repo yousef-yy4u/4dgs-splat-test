@@ -18,3 +18,13 @@ generation/inputs/
 *.pth
 *.ckpt
 *.onnx
+
+# dataset pipeline: generated meshes / renders / downloads (keep .py/.sh/.ps1/.md scripts)
+dataset/motion_out/
+dataset/slice_out/
+dataset/*.png
+dataset/*.gif
+dataset/*.npy
+dataset/*.obj
+dataset/*.ply
+dataset/*.bvh

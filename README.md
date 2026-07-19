@@ -17,7 +17,7 @@ clean model → on-device photorealistic animated Gaussian-splat avatars). Its s
 3. **[GLASSES.md](GLASSES.md)** — the glasses product SSOT (separate product, shared foundations).
 4. **[IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md)** — build plan for the platform MVP.
 5. **[docs/planning-memory/](docs/planning-memory/)** — distilled cross-session findings (the "memory"): licensing landmines, rigged-gaussian-splatting reality, generation-pipeline reality check, humanoid-4dgs status, asset-library architecture, etc.
-6. **[research/](research/)** — deep-research reports: market & GTM, tech-stack/architecture, 8th Wall dive, generation texture/rigging.
+6. **[research/](research/)** — deep-research reports: market & GTM, tech-stack/architecture, 8th Wall dive, generation texture/rigging, and the **[NVIDIA open-source scan](research/nvidia-open-source-scan.md)** (D61 — license-verified clean components + plan of action for the 4DGS avatar pipeline).
 7. **[docs/BLACKWELL_BUILD.md](docs/BLACKWELL_BUILD.md)** — reproducible recipe for running the LHM++ humanoid stack on an RTX 5090 (sm_120).
 
 ## The current goal in one paragraph
