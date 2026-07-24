@@ -110,8 +110,18 @@ cp <scratch>/fit/avatar.ply motion_out/poc_avatar.ply    # held-out 27.29 dB is 
 python mpfb_prefit.py
 ```
 
-The walk itself (`motion_out/walk_face_*.npy/.npz`) comes from `pose_default_walk.py` driven by the
-committed `kimodo_out/walk.npz` — no Kimodo/Qwen install needed unless you want *new* motion.
+The walk itself comes from `pose_default_walk.py` driven by the committed `kimodo_out/walk.npz` — no
+Kimodo/Qwen install needed unless you want *new* motion:
+
+```bash
+python pose_default_walk.py --npz kimodo_out/walk.npz --out <scratch>/walk --stem walk_face --frames 48
+# -> motion_out/walk_face_{verts,faces}.npy + _eyemeta.json, which the viewer serves
+```
+
+**This whole chain was re-run end-to-end from committed files on 2026-07-24 before the migration** —
+base OBJ → textured GLB → posed walk all reproduced correctly, so a fresh clone plus `assets_src/` is
+genuinely sufficient. One first-run cost: `anny` rebuilds a model cache into `~/.cache/anny/v1/`
+(a few minutes) the first time any script imports it.
 
 ## 5. Disk hygiene (why we moved)
 
