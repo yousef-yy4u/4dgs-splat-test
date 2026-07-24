@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4DGS Splat Viewer</title>
+<style>
+  :root { color-scheme: dark;
+    --bg:#0b0d12; --panel:rgba(16,20,28,.92); --panel2:#12161f; --line:#232a36;
+    --ink:#e7ebf0; --dim:#9aa4b2; --dim2:#7c8698; --accent:#3b82f6; --accent2:#2563eb;
+    --good:#34d399; --warn:#fbbf24; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font:13px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    overflow:hidden; }
+  #grid { position:fixed; inset:0; display:grid;
+    grid-template-columns: 244px 1fr 250px;
+    grid-template-rows: 46px 1fr;
+    grid-template-areas: "top top top" "left canvas right"; }
+  #top { grid-area:top; display:flex; align-items:center; gap:14px; padding:0 16px;
+    background:var(--panel); border-bottom:1px solid var(--line); z-index:6; }
+  #top h1 { font-size:14px; margin:0; letter-spacing:.06em; font-weight:600; display:flex; align-items:center; gap:9px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; }
+  .dot.live { background:var(--good); box-shadow:0 0 8px var(--good); }
+  #top .spacer { flex:1; }
+  #top .stat { color:var(--dim2); font-size:11px; }
+  #top a { color:var(--dim); text-decoration:none; font-size:11px; border:1px solid var(--line); border-radius:7px; padding:5px 10px; }
+
+  #left  { grid-area:left;  background:var(--panel); border-right:1px solid var(--line); overflow-y:auto; padding:10px; }
+  #right { grid-area:right; background:var(--panel); border-left:1px solid var(--line); overflow-y:auto; }
+  #canvas-wrap { grid-area:canvas; position:relative; min-width:0; min-height:0; }
+  canvas { display:block; }
+
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .card { border:1px solid var(--line); border-radius:10px; overflow:hidden; cursor:pointer;
+    background:var(--panel2); transition:border-color .15s, transform .1s; }
+  .card:hover { border-color:#39445a; transform:translateY(-1px); }
+  .card.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .card .thumb { width:100%; aspect-ratio:1/1; display:grid; place-items:center; color:#3a445a; font-size:22px; background:#05060a; }
+  .card .cap { padding:6px 7px; font-size:11px; color:var(--dim); line-height:1.3; word-break:break-word; }
+  .hint { color:var(--dim2); font-size:10.5px; line-height:1.5; margin-top:10px; }
+
+  .sec { border-bottom:1px solid var(--line); padding:12px 13px; }
+  .sec h2 { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim2);
+    margin:0 0 10px; font-weight:600; }
+  .row { display:flex; align-items:center; gap:9px; margin:8px 0; }
+  .row label { color:var(--dim); min-width:64px; font-size:11.5px; }
+  .row .val { color:var(--ink); font-variant-numeric:tabular-nums; min-width:34px; text-align:right; font-size:11.5px; }
+  input[type=range] { flex:1; accent-color:var(--accent); min-width:0; }
+
+  button { background:#1b2230; color:var(--ink); border:1px solid #2b3444; border-radius:8px;
+    padding:5px 9px; cursor:pointer; font:inherit; font-size:11.5px; }
+  button:hover { background:#232c3d; }
+  button.on { background:var(--accent2); border-color:var(--accent); }
+
+  #toast { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:8;
+    background:rgba(16,20,28,.95); border:1px solid var(--line); border-radius:10px;
+    padding:9px 16px; color:var(--dim); display:none; box-shadow:0 8px 30px rgba(0,0,0,.4); }
+  #errbar { position:absolute; left:12px; right:12px; bottom:12px; z-index:9; display:none;
+    background:rgba(60,20,24,.96); border:1px solid #7f1d1d; border-radius:9px; padding:9px 13px;
+    color:#fecaca; font:11.5px/1.4 ui-monospace, monospace; white-space:pre-wrap; max-height:38%; overflow:auto; }
+</style>
+</head>
+<body>
+<div id="grid">
+  <div id="top">
+    <h1><span class="dot" id="statusdot"></span> Splat Viewer</h1>
+    <div class="stat" id="modelstat">—</div>
+    <div class="spacer"></div>
+    <a href="/">← Studio</a>
+  </div>
+
+  <div id="left">
+    <div class="cards" id="splatcards"></div>
+    <div class="hint">Each card is a fitted-gaussian <code>.ply</code> found in <code>motion_out/</code>. Click one to load it. This is a dedicated route (D84) — gaussians render as GPU-instanced, alpha-blended, camera-facing billboard quads with a soft radial falloff (the real gaussian-splat look), depth-sorted back-to-front every frame. If it still looks sparse, push the Size slider up.</div>
+  </div>
+
+  <div id="canvas-wrap">
+    <div id="toast"></div>
+    <div id="errbar"></div>
+  </div>
+
+  <div id="right">
+    <div class="sec">
+      <h2>Render</h2>
+      <div class="row"><label>Size ×</label><input id="sizeMul" type="range" min="0.5" max="14" step="0.1" value="5.0"><span class="val" id="sizeMulV">5.0×</span></div>
+      <div class="row"><label>Alpha ×</label><input id="opac" type="range" min="0.3" max="6" step="0.1" value="2.2"><span class="val" id="opacV">2.20</span></div>
+      <div class="hint">Each gaussian is a camera-facing quad with a soft radial alpha falloff, sized off its fitted stddev × Size. Default (5×) targets ~2.5-3 stddev radius so neighboring splats overlap into a continuous surface — push it higher if gaps show, lower if it looks blobby/overexposed.</div>
+    </div>
+    <div class="sec">
+      <h2>Stats</h2>
+      <div class="row"><label>Gaussians</label><span class="val" id="statN">—</span></div>
+      <div class="row"><label>File</label><span class="val" id="statFile" style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</span></div>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const wrap = $('canvas-wrap');
+const W = () => wrap.clientWidth, H = () => wrap.clientHeight;
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(W(), H());
+renderer.setClearColor(0x0b0d12, 1);
+wrap.appendChild(renderer.domElement);
+
+function slog(){ const m=[].slice.call(arguments).join(' ');
+  try{ fetch('/log',{method:'POST',body:'[splat] '+m}); }catch(e){} console.log('[slog]',m); }
+function showErr(msg){ const e=$('errbar'); if(!e) return; e.textContent = '⚠ '+msg; e.style.display='block'; console.error(msg); slog('ERR', msg); }
+function clearErr(){ const e=$('errbar'); if(e) e.style.display='none'; }
+addEventListener('error', ev => showErr((ev.message||'error')+'  ('+(ev.filename||'').split('/').pop()+':'+(ev.lineno||'?')+')'));
+addEventListener('unhandledrejection', ev => { const r=ev.reason; showErr('promise: '+((r&&(r.stack||r.message))||r)); });
+const _consoleError = console.error.bind(console);
+console.error = (...a) => { _consoleError(...a); try{ slog('console.error', a.map(String).join(' ').slice(0,500)); }catch(e){} };
+renderer.domElement.addEventListener('webglcontextlost', e => { e.preventDefault(); showErr('WebGL context lost.'); });
+renderer.domElement.addEventListener('webglcontextrestored', () => clearErr());
+
+slog('boot: wrap', W()+'x'+H(), 'gl', (()=>{ try{ const c=renderer.getContext(); return c.getParameter(c.VERSION); }catch(e){ return 'ctx? '+e; } })());
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0b0d12, 6, 22);
+const camera = new THREE.PerspectiveCamera(42, W()/H(), 0.01, 200);
+camera.position.set(1.6, 1.3, 2.2);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+controls.target.set(0, 0.85, 0);
+// D98 ROOT CAUSE of "zoom-in makes the splat vanish": OrbitControls' minDistance only
+// clamps the camera-to-TARGET distance (spherical.radius / newRadius). With
+// zoomToCursor=true the dolly instead flies the camera ALONG THE CURSOR RAY and then
+// re-derives the target straight ahead at newRadius (screenSpacePanning path,
+// OrbitControls.js ~L344). So minDistance never constrains how close the camera gets to
+// the actual gaussians. The body is thin (world depth ~0.42m) with lots of empty
+// background around it, so any zoom whose cursor isn't dead-on the body flew the camera
+// PAST the body into/through the cloud (depthWrite:false billboards on every side => reads
+// as "disappeared"); zoom-out reversed it. D86 rescaled minDistance to the bbox but left
+// zoomToCursor on, so it fixed the wrong lever. Fix: straight dolly toward the target
+// (zoomToCursor OFF) so minDistance strictly bounds the closest approach to the body, a
+// calmer zoomSpeed, and a per-model minDistance parked just outside the surface (set at
+// load). Panning (right-drag) still moves the target to the face/arms; it's clamped to the
+// body bbox each frame (clampTarget) so it can't run off into empty space either.
+controls.zoomSpeed = 1.0; controls.zoomToCursor = false;
+controls.minDistance = 0.2; controls.maxDistance = 30;
+
+scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x202a33, 1.0));
+const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(3,6,4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 0.9); rim.position.set(-4,3,-3); scene.add(rim);
+const ground = new THREE.Mesh(new THREE.CircleGeometry(10, 48),
+  new THREE.MeshStandardMaterial({ color:0x0e131b, roughness:1 }));
+ground.rotation.x = -Math.PI/2; ground.position.y = -0.001; scene.add(ground);
+const grid = new THREE.GridHelper(20, 40, 0x2a3446, 0x161c26);
+grid.material.transparent = true; grid.material.opacity = 0.5; scene.add(grid);
+
+// ---- gaussian renderer: GPU-instanced alpha-blended billboard quads ----
+// D85 CORRECTION: this route first shipped as opaque GPU-instanced icospheres (guaranteed
+// to render as SOMETHING, but the user correctly called it out -- "black spheres floating
+// in the air... this doesn't look like 3DGS"). Opaque geometry with hard silhouettes can
+// never read as soft gaussian falloff no matter how densely packed; that was a real design
+// mistake, not a acceptable tradeoff. Re-examined the D80-D83 "point cloud" history with
+// actual numbers instead of assuming the renderer itself was broken: poc_avatar.ply's mean
+// gaussian size (stddev) is ~0.0072, median nearest-neighbor spacing ~0.0015 -- for
+// overlapping soft-falloff billboards to read as a continuous surface you want a radius of
+// roughly 2.5-3x the stddev, i.e. `uSizeMult` around 5-6 (half-width = 0.5*size*uSizeMult).
+// D83's viewer.html splat-compare had RETUNED uSizeMult down to 1.3 (half-width ~0.65x
+// stddev, ~4-5x too small) -- entirely consistent with "looks like sparse points/dust" even
+// though the billboard-quad TECHNIQUE (view-space corner offset, no gl_PointSize) was
+// already immune to the ANGLE/Direct3D11 point-sprite-capping issue D82 diagnosed. So: back
+// to alpha-blended billboard quads (the real gaussian-splat look), GPU-instanced via
+// InstancedBufferGeometry (same proven technique as the Studio's splat-compare), just sized
+// correctly this time, with a live size/alpha slider so it's never silently wrong again.
+// D87 CORRECTION: D85's billboard quads sized every gaussian as an ISOTROPIC circle (a single
+// scalar "size" = mean of the 3 log-scale axes) -- fixed the sparse-points bug but the user
+// correctly called the result "bubbly foam clay toy," and asked point-blank whether this is
+// really the same technique as real 3DGS viewers. It wasn't, fully: real Gaussian Splatting
+// draws each gaussian as its true oriented ELLIPSE -- the projection of its full 3D covariance
+// (rotation quaternion + per-axis scale) onto the screen plane -- not a same-size circle for
+// every point. Collapsing that to one scalar throws away shape information real splat
+// renderers (antimatter15, mkkellogg) rely on for a sharp, non-uniform look. Now receives the
+// full 3D covariance per gaussian (serve_viewer.py's build_splat_buffer, D87) and does the
+// standard EWA-splatting-style projection HERE each frame: rotate the object-space covariance
+// into camera space by the view rotation, take the top-left 2x2 (the screen-parallel spread --
+// we bill-board in view-space XY same as before, so perspective foreshortening is handled by
+// the normal projectionMatrix multiply, not a separate Jacobian), eigen-decompose that 2x2
+// (closed-form, symmetric matrix), and offset the quad corners along the two eigenvectors
+// scaled by their own sqrt(eigenvalue) -- i.e. a properly oriented, properly anisotropic
+// ellipse per gaussian instead of a uniform circle. NOTE: this fit's gaussians measured
+// close to isotropic already (ratio ~1.1 median) BEFORE this fix -- the shape correction alone
+// won't fully explain "clay toy"; see D87's refit (more views/iterations) for the other half.
+const SPLAT_VERT = `
+  attribute vec2 corner;
+  attribute vec3 instancePos; attribute vec3 instanceColor;
+  attribute vec3 instanceCovA; attribute vec3 instanceCovB; attribute float instanceAlpha;
+  varying vec3 vColor; varying float vAlpha; varying vec2 vCorner;
+  uniform float uSizeMult;
+  void main(){
+    vColor = instanceColor; vAlpha = instanceAlpha; vCorner = corner;
+
+    mat3 W = mat3(modelViewMatrix);   // object-space -> camera-space rotation (no shear/scale here)
+    mat3 Sigma = mat3(
+      instanceCovA.x, instanceCovA.y, instanceCovA.z,
+      instanceCovA.y, instanceCovB.x, instanceCovB.y,
+      instanceCovA.z, instanceCovB.y, instanceCovB.z
+    );
+    mat3 SigmaCam = W * Sigma * transpose(W);
+    float a = SigmaCam[0][0], b = SigmaCam[0][1], c = SigmaCam[1][1];   // screen-parallel 2x2 block
+
+    float mid = 0.5 * (a + c);
+    float rad = sqrt(max(0.0, mid * mid - (a * c - b * b)));
+    float l1 = max(mid + rad, 0.0), l2 = max(mid - rad, 0.0);
+    vec2 e1 = (abs(b) > 1e-9) ? normalize(vec2(b, l1 - a)) : vec2(1.0, 0.0);
+    vec2 e2 = vec2(-e1.y, e1.x);
+
+    vec2 axis1 = e1 * sqrt(l1) * uSizeMult;
+    vec2 axis2 = e2 * sqrt(l2) * uSizeMult;
+
+    vec4 mv = modelViewMatrix * vec4(instancePos, 1.0);
+    mv.xy += corner.x * axis1 + corner.y * axis2;
+    gl_Position = projectionMatrix * mv;
+  }`;
+const SPLAT_FRAG = `
+  varying vec3 vColor; varying float vAlpha; varying vec2 vCorner;
+  uniform float uAlphaBoost;
+  void main(){
+    float r2 = dot(vCorner, vCorner) * 4.0;
+    if(r2 > 1.0) discard;
+    gl_FragColor = vec4(vColor, clamp(vAlpha * uAlphaBoost, 0.0, 1.0) * exp(-r2 * 2.0));
+  }`;
+
+let splatMesh = null, splatMat = null, splatN = 0;
+let basePos = null, baseCol = null, baseCovA = null, baseCovB = null, baseAlpha = null;
+let splatDist = null, splatOrderArr = null;
+// world-space bbox of the loaded splat, used to keep the pan target on the body (D98).
+let bboxWMin = null, bboxWMax = null;
+function clampTarget(){
+  if(!bboxWMin) return;
+  const pad = 0.05;
+  controls.target.x = Math.min(Math.max(controls.target.x, bboxWMin[0]-pad), bboxWMax[0]+pad);
+  controls.target.y = Math.min(Math.max(controls.target.y, bboxWMin[1]-pad), bboxWMax[1]+pad);
+  controls.target.z = Math.min(Math.max(controls.target.z, bboxWMin[2]-pad), bboxWMax[2]+pad);
+}
+const splatRoot = new THREE.Group();
+splatRoot.rotation.x = -Math.PI/2;   // ply fit frame is Z-up -> three's Y-up
+scene.add(splatRoot);
+
+function rebuildInstances(){
+  if(!basePos) return;
+  const n = splatN;
+  if(splatMesh){ splatRoot.remove(splatMesh); splatMesh.geometry.dispose(); splatMat.dispose(); }
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute('corner', new THREE.BufferAttribute(new Float32Array([-.5,-.5, .5,-.5, .5,.5, -.5,.5]), 2));
+  g.setIndex([0,1,2, 0,2,3]);
+  g.setAttribute('instancePos',   new THREE.InstancedBufferAttribute(basePos.slice(),3));
+  g.setAttribute('instanceColor', new THREE.InstancedBufferAttribute(baseCol.slice(),3));
+  g.setAttribute('instanceCovA',  new THREE.InstancedBufferAttribute(baseCovA.slice(),3));
+  g.setAttribute('instanceCovB',  new THREE.InstancedBufferAttribute(baseCovB.slice(),3));
+  g.setAttribute('instanceAlpha', new THREE.InstancedBufferAttribute(baseAlpha.slice(),1));
+  g.instanceCount = n;
+  splatMat = new THREE.ShaderMaterial({ uniforms:{ uSizeMult:{value:+sizeMulEl.value}, uAlphaBoost:{value:+opac.value} },
+    vertexShader:SPLAT_VERT, fragmentShader:SPLAT_FRAG, transparent:true, depthWrite:false, side:THREE.DoubleSide });
+  splatMesh = new THREE.Mesh(g, splatMat);
+  splatRoot.add(splatMesh);
+  splatDist = new Float32Array(n); splatOrderArr = new Array(n); for(let i=0;i<n;i++) splatOrderArr[i]=i;
+}
+
+// painter's-algorithm depth sort (D82's technique, ported): instancing has no separate
+// draw-order index, so alpha-blended instances composite in attribute-array order --
+// without this, overlapping splats look noisy instead of a coherent surface. Transform only
+// the camera into the splat's local space, sort a reused index buffer far-to-near, physically
+// rewrite the instance attribute arrays from an untouched original copy each frame.
+const _splatInvMat = new THREE.Matrix4(), _splatLocalCam = new THREE.Vector3();
+function updateSplatSort(){
+  if(!splatMesh || !basePos) return;
+  splatRoot.updateMatrixWorld();
+  _splatInvMat.copy(splatRoot.matrixWorld).invert();
+  _splatLocalCam.copy(camera.position).applyMatrix4(_splatInvMat);
+  const n = splatN, cx=_splatLocalCam.x, cy=_splatLocalCam.y, cz=_splatLocalCam.z;
+  for(let i=0;i<n;i++){
+    const dx=basePos[i*3]-cx, dy=basePos[i*3+1]-cy, dz=basePos[i*3+2]-cz;
+    splatDist[i] = dx*dx+dy*dy+dz*dz;
+  }
+  splatOrderArr.sort((a,b)=> splatDist[b]-splatDist[a]);
+  const g = splatMesh.geometry;
+  const oPos=g.attributes.instancePos.array, oCol=g.attributes.instanceColor.array,
+        oCA=g.attributes.instanceCovA.array, oCB=g.attributes.instanceCovB.array,
+        oAl=g.attributes.instanceAlpha.array;
+  for(let i=0;i<n;i++){
+    const j = splatOrderArr[i];
+    oPos[i*3]=basePos[j*3]; oPos[i*3+1]=basePos[j*3+1]; oPos[i*3+2]=basePos[j*3+2];
+    oCol[i*3]=baseCol[j*3]; oCol[i*3+1]=baseCol[j*3+1]; oCol[i*3+2]=baseCol[j*3+2];
+    oCA[i*3]=baseCovA[j*3]; oCA[i*3+1]=baseCovA[j*3+1]; oCA[i*3+2]=baseCovA[j*3+2];
+    oCB[i*3]=baseCovB[j*3]; oCB[i*3+1]=baseCovB[j*3+1]; oCB[i*3+2]=baseCovB[j*3+2];
+    oAl[i]=baseAlpha[j];
+  }
+  g.attributes.instancePos.needsUpdate = true; g.attributes.instanceColor.needsUpdate = true;
+  g.attributes.instanceCovA.needsUpdate = true; g.attributes.instanceCovB.needsUpdate = true;
+  g.attributes.instanceAlpha.needsUpdate = true;
+}
+
+async function loadSplat(name){
+  toast('loading '+name+'…');
+  try{
+    const buf = await (await fetch('/splat.bin?name='+encodeURIComponent(name), {cache:'no-store'})).arrayBuffer();
+    // D87: stride 40 = pos(3f4) + cov_xx,xy,xz(3f4) + cov_yy,yz,zz(3f4) + rgba(4u1)
+    const dv = new DataView(buf); const n = dv.getUint32(0, true); const stride = 40; let o = 4;
+    const pos = new Float32Array(n*3), col = new Float32Array(n*3), al = new Float32Array(n);
+    const covA = new Float32Array(n*3), covB = new Float32Array(n*3);
+    for(let i=0;i<n;i++){ const b=o+i*stride;
+      pos[i*3]=dv.getFloat32(b,true); pos[i*3+1]=dv.getFloat32(b+4,true); pos[i*3+2]=dv.getFloat32(b+8,true);
+      covA[i*3]=dv.getFloat32(b+12,true); covA[i*3+1]=dv.getFloat32(b+16,true); covA[i*3+2]=dv.getFloat32(b+20,true);
+      covB[i*3]=dv.getFloat32(b+24,true); covB[i*3+1]=dv.getFloat32(b+28,true); covB[i*3+2]=dv.getFloat32(b+32,true);
+      col[i*3]=dv.getUint8(b+36)/255; col[i*3+1]=dv.getUint8(b+37)/255; col[i*3+2]=dv.getUint8(b+38)/255;
+      al[i]=dv.getUint8(b+39)/255; }
+    basePos = pos; baseCol = col; baseCovA = covA; baseCovB = covB; baseAlpha = al; splatN = n;
+    rebuildInstances();
+    // frame the camera on the loaded splat's bbox. Local ply frame is (x,y,z) with z=up;
+    // splatRoot.rotation.x=-90deg maps local(x,y,z) -> world(x, z, -y), so the world Z
+    // coordinate comes from local Y (index 1), NOT local Z (index 2, which is world Y / height).
+    let mn=[1e9,1e9,1e9], mx=[-1e9,-1e9,-1e9];
+    for(let i=0;i<n;i++) for(let k=0;k<3;k++){ const v=pos[i*3+k]; if(v<mn[k])mn[k]=v; if(v>mx[k])mx[k]=v; }
+    const cx=(mn[0]+mx[0])/2, cy=(mn[1]+mx[1])/2, topY=mx[2]-mn[2];   // local z is up pre-rotation
+    controls.target.set(cx, mn[2]+topY*0.55, -cy);
+    camera.position.set(cx+topY*0.9, mn[2]+topY*0.75, -cy+topY*1.3);
+    // world-space bbox (local (x,y,z)->world (x, z, -y) via splatRoot.rotation.x=-90deg).
+    bboxWMin = [mn[0], mn[2], -mx[1]];
+    bboxWMax = [mx[0], mx[2], -mn[1]];
+    // D98: with straight dolly (zoomToCursor OFF), minDistance now genuinely bounds the
+    // camera's closest approach to the TARGET, so parking it just outside the body's own
+    // half-depth keeps the camera from ever entering the cloud while still allowing a tight
+    // surface-filling close-up. Use the world-space front-to-back depth (local-y extent);
+    // for a panned face/arm target (a much smaller region) this still reads as a crisp
+    // close-up. Floor at 0.12 so tiny/degenerate models stay sane.
+    const depthWorld = (mx[1]-mn[1]);          // local-y extent == world-z (front/back) depth
+    controls.minDistance = Math.max(depthWorld*0.55, 0.12);
+    controls.maxDistance = Math.max(topY*4.0, 12.0);
+    controls.update();
+    $('statN').textContent = n.toLocaleString();
+    $('statFile').textContent = name+'.ply';
+    $('modelstat').textContent = name+' · '+n.toLocaleString()+' gaussians';
+    $('statusdot').className = 'dot live';
+    slog('loaded', name, n, 'gaussians');
+    toast(n.toLocaleString()+' gaussians ✓');
+    clearErr();
+  }catch(e){ showErr('load '+name+': '+(e&&(e.stack||e.message)||e)); }
+}
+
+function toast(msg, ms=1600){ const t=$('toast'); t.textContent=msg; t.style.display='block';
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', ms); }
+
+const sizeMulEl = $('sizeMul'), opac = $('opac');
+sizeMulEl.oninput = () => { $('sizeMulV').textContent = (+sizeMulEl.value).toFixed(1)+'×';
+  if(splatMat) splatMat.uniforms.uSizeMult.value = +sizeMulEl.value; };
+opac.oninput = () => { $('opacV').textContent = (+opac.value).toFixed(2);
+  if(splatMat) splatMat.uniforms.uAlphaBoost.value = +opac.value; };
+
+async function loadCatalog(){
+  const j = await (await fetch('/splats.json')).json();
+  const list = j.splats || [];
+  const host = $('splatcards'); host.innerHTML = '';
+  if(!list.length){ host.parentElement.insertAdjacentHTML('beforeend', '<div class="hint">No .ply files found in motion_out/ yet — run fit_gsplat_poc.py.</div>'); return; }
+  let selName = null;
+  list.forEach(s => {
+    const c = document.createElement('div'); c.className = 'card';
+    c.innerHTML = `<span class="thumb">◈</span><div class="cap">${s.name}<br><span style="color:var(--dim2)">${(s.size/1e6).toFixed(1)} MB</span></div>`;
+    c.onclick = () => { host.querySelectorAll('.card').forEach(x=>x.classList.remove('sel')); c.classList.add('sel'); loadSplat(s.name); };
+    host.appendChild(c);
+    if(s.name === 'poc_avatar' || !selName){ selName = s.name; }
+    if(s.name === 'poc_avatar') c.dataset.default = '1';
+  });
+  const def = host.querySelector('[data-default="1"]') || host.firstElementChild;
+  if(def){ def.classList.add('sel'); loadSplat(selName); }
+}
+
+function tick(now){
+  requestAnimationFrame(tick);
+  clampTarget();
+  controls.update();
+  updateSplatSort();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(tick);
+
+addEventListener('resize', ()=>{ camera.aspect=W()/H(); camera.updateProjectionMatrix(); renderer.setSize(W(),H()); });
+new ResizeObserver(()=>{ camera.aspect=W()/H(); camera.updateProjectionMatrix(); renderer.setSize(W(),H()); }).observe(wrap);
+
+loadCatalog();
+</script>
+</body>
+</html>

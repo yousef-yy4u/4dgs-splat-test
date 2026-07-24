@@ -1,5 +1,14 @@
 # GPU-box task brief — clean motion → Anny render (hand this to Claude Code running ON the rented GPU)
 
+> **✅ STATUS 2026-07-22 (D70): DONE — walk achieved.** Ran on an RTX 3090 box. Produced a clean natural walk
+> via `Kimodo-SOMA-RP-v1.1 → SOMALayer(anny) → pyrender EGL` (`dataset/motion_out/walk.gif`). **One deviation
+> from the brief below:** Kimodo's official text encoder is the GATED, non-OSI Llama-3-8B → we DODGED it with the
+> `qian2501/kimodo` fork + Qwen3-8B (Apache, ungated) + an Apache-2.0 projection layer (`TEXT_ENCODER=qwen3-8b`),
+> so NO Meta/HF gate is needed. **Env fix:** the stack needs torch ≥2.5 (upgraded to 2.5.1+cu124 + matching
+> torchvision/torchaudio, numpy<2). See PROJECT.md D70 + SESSION_HANDOFF for the full recipe and next steps
+> (idle/wave, phenotype tuning, transl unit-scale check, then scale the full set).
+
+
 You are running on a **rented NVIDIA GPU box** (Linux, CUDA). Your job: generate **clean-licensed human
 motion** with **NVIDIA Kimodo-RP**, drive the **Anny** body model with it via **SOMA-X's `SOMALayer`**, and
 render it (multi-view images + a GIF). This was scoped on a separate laptop session; the notes below are

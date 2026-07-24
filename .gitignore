@@ -28,3 +28,4 @@ dataset/*.npy
 dataset/*.obj
 dataset/*.ply
 dataset/*.bvh
+dataset/gsplat_out/

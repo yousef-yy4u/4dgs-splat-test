@@ -1,0 +1,30 @@
+# torch/CUDA stack (pinned — Blackwell/Ampere builds are fragile, D59)
+accelerate                1.14.0
+einops                    0.8.2
+gsplat                    1.5.3
+ImageIO                   2.37.4
+numpy                     1.26.4
+Pillow                    10.0.1
+playwright                1.61.0
+plyfile                   1.1.3
+pypdf                     6.14.2
+roma                      1.5.6
+scipy                     1.15.3
+torch                     2.5.1+cu124
+torchaudio                2.5.1+cu124
+torchvision               0.20.1+cu124
+transformers              5.14.1
+trimesh                   4.12.2
+
+# python
+Python 3.10.13
+# cuda
+Cuda compilation tools, release 12.1, V12.1.105
+Build cuda_12.1.r12.1/compiler.32688072_0
+NVIDIA GeForce RTX 3090, 580.126.09, 24576 MiB
+# blender
+Blender 4.2.5 LTS
+# blender addons
+mpfb
+# anny
+/opt/conda/lib/python3.10/site-packages/anny

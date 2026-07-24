@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4DGS Studio</title>
+<style>
+  :root { color-scheme: dark;
+    --bg:#0b0d12; --panel:rgba(16,20,28,.92); --panel2:#12161f; --line:#232a36;
+    --ink:#e7ebf0; --dim:#9aa4b2; --dim2:#7c8698; --accent:#3b82f6; --accent2:#2563eb;
+    --good:#34d399; --warn:#fbbf24; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font:13px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    overflow:hidden; }
+  #grid { position:fixed; inset:0; display:grid;
+    grid-template-columns: 244px 1fr 250px;
+    grid-template-rows: 46px 1fr 52px;
+    grid-template-areas: "top top top" "left canvas right" "left transport right"; }
+  #top { grid-area:top; display:flex; align-items:center; gap:14px; padding:0 16px;
+    background:var(--panel); border-bottom:1px solid var(--line); z-index:6; }
+  #top h1 { font-size:14px; margin:0; letter-spacing:.06em; font-weight:600; display:flex; align-items:center; gap:9px; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#6b7280; }
+  .dot.live { background:var(--good); box-shadow:0 0 8px var(--good); }
+  .dot.wait { background:var(--warn); animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity:.35; } }
+  #top .spacer { flex:1; }
+  #top .stat { color:var(--dim2); font-size:11px; }
+
+  #left  { grid-area:left;  background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  #right { grid-area:right; background:var(--panel); border-left:1px solid var(--line); overflow-y:auto; }
+  #canvas-wrap { grid-area:canvas; position:relative; min-width:0; min-height:0; }
+  canvas { display:block; }
+
+  /* left rail */
+  #railtabs { display:flex; flex-wrap:wrap; gap:4px; padding:8px; border-bottom:1px solid var(--line); }
+  #railtabs button { flex:1 0 auto; }
+  #railbody { flex:1; overflow-y:auto; padding:10px; min-height:0; }
+  #leftfoot { display:flex; flex-wrap:wrap; gap:6px; padding:8px; border-top:1px solid var(--line); }
+  #leftfoot button { flex:1; }
+  #clothToggle { flex-basis:100%; display:flex; align-items:center; gap:6px; font-size:12px; opacity:.85; cursor:pointer; }
+  #clothToggle input { margin:0; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .card { border:1px solid var(--line); border-radius:10px; overflow:hidden; cursor:pointer;
+    background:var(--panel2); transition:border-color .15s, transform .1s; }
+  .card:hover { border-color:#39445a; transform:translateY(-1px); }
+  .card.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  .card .thumb { width:100%; aspect-ratio:1/1; background:#05060a center/cover no-repeat; display:block; }
+  .card .thumb.ph { display:grid; place-items:center; color:#3a445a; font-size:22px; }
+  .card .cap { padding:6px 7px; font-size:11px; color:var(--dim); line-height:1.3; }
+  .drop { margin-top:10px; border:1.5px dashed #2c3546; border-radius:10px; padding:16px 10px;
+    text-align:center; color:var(--dim2); font-size:11.5px; cursor:pointer; transition:border-color .15s,background .15s; }
+  .drop:hover, .drop.over { border-color:var(--accent); background:rgba(59,130,246,.07); color:var(--dim); }
+  .assetlist { margin-top:10px; display:flex; flex-direction:column; gap:5px; }
+  .assetrow { display:flex; align-items:center; gap:8px; font-size:11px; color:var(--dim);
+    border:1px solid var(--line); border-radius:8px; padding:5px 8px; background:var(--panel2); }
+  .assetrow .sw { width:20px; height:20px; border-radius:5px; background:#05060a center/cover no-repeat; flex:0 0 auto; border:1px solid var(--line); }
+  .assetrow .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .grouptitle { font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--dim2); margin:12px 0 6px; font-weight:600; }
+  .grouptitle:first-child { margin-top:0; }
+  .card .thumb.txt { display:grid; place-items:center; color:var(--dim); font-size:10px; text-align:center; padding:4px; line-height:1.25; }
+
+  /* right rail sections */
+  .sec { border-bottom:1px solid var(--line); padding:12px 13px; }
+  .sec h2 { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim2);
+    margin:0 0 10px; font-weight:600; }
+  .row { display:flex; align-items:center; gap:9px; margin:8px 0; }
+  .row label { color:var(--dim); min-width:64px; font-size:11.5px; }
+  .row .val { color:var(--ink); font-variant-numeric:tabular-nums; min-width:34px; text-align:right; font-size:11.5px; }
+  input[type=range] { flex:1; accent-color:var(--accent); min-width:0; }
+  select, .txtin { width:100%; background:var(--panel2); color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:6px 8px; font:inherit; }
+
+  /* camera-rig layer cards */
+  .layer { border:1px solid var(--line); border-radius:9px; padding:8px 9px; margin:8px 0; background:var(--panel2); }
+  .layer .lhead { display:flex; align-items:center; gap:7px; margin-bottom:4px; }
+  .layer .lhead .swatch { width:9px; height:9px; border-radius:50%; flex:0 0 auto; }
+  .layer .lhead .lt { font-size:11px; color:var(--dim); font-weight:600; }
+  .layer .lhead .lx { margin-left:auto; cursor:pointer; color:var(--dim2); border:none; background:none; padding:0 3px; font-size:14px; }
+  .layer .lhead .lx:hover { color:#fca5a5; }
+  .layer .rr { display:flex; align-items:center; gap:7px; margin:3px 0; }
+  .layer .rr label { color:var(--dim2); min-width:44px; font-size:10.5px; }
+  .layer .rr .val { min-width:30px; font-size:10.5px; }
+
+  button { background:#1b2230; color:var(--ink); border:1px solid #2b3444; border-radius:8px;
+    padding:5px 9px; cursor:pointer; font:inherit; font-size:11.5px; }
+  button:hover { background:#232c3d; }
+  button.on { background:var(--accent2); border-color:var(--accent); }
+  button.primary { background:var(--accent2); border-color:var(--accent); width:100%; padding:8px; margin-top:10px; font-weight:600; }
+  button.primary:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost { background:transparent; }
+
+  /* transport */
+  #transport { grid-area:transport; display:flex; align-items:center; gap:12px; padding:0 16px;
+    background:var(--panel); border-top:1px solid var(--line); z-index:6; }
+  #transport #scrub { flex:1; }
+  #transport .tspeed { display:flex; align-items:center; gap:7px; color:var(--dim); }
+
+  #toast { position:absolute; left:50%; bottom:16px; transform:translateX(-50%); z-index:8;
+    background:rgba(16,20,28,.95); border:1px solid var(--line); border-radius:10px;
+    padding:9px 16px; color:var(--dim); display:none; box-shadow:0 8px 30px rgba(0,0,0,.4); }
+  #camlabel { position:absolute; left:14px; top:12px; z-index:5; background:rgba(16,20,28,.8);
+    border:1px solid var(--line); border-radius:8px; padding:6px 11px; color:var(--dim); font-size:11px; }
+  #errbar { position:absolute; left:12px; right:12px; bottom:12px; z-index:9; display:none;
+    background:rgba(60,20,24,.96); border:1px solid #7f1d1d; border-radius:9px; padding:9px 13px;
+    color:#fecaca; font:11.5px/1.4 ui-monospace, monospace; white-space:pre-wrap; max-height:38%; overflow:auto; }
+  .hint { color:var(--dim2); font-size:10.5px; line-height:1.5; margin-top:8px; }
+</style>
+</head>
+<body>
+<div id="grid">
+  <div id="top">
+    <h1><span class="dot wait" id="statusdot"></span> 4DGS Studio</h1>
+    <div class="stat" id="modelstat">—</div>
+    <div class="spacer"></div>
+    <a href="/splat" target="_blank" style="color:var(--dim);text-decoration:none;font-size:11px;border:1px solid var(--line);border-radius:7px;padding:5px 10px;">Splat viewer ↗</a>
+    <div class="stat" id="perfstat"></div>
+  </div>
+
+  <!-- LEFT: model / asset browser -->
+  <div id="left">
+    <div id="railtabs">
+      <button data-rail="models" class="on">Models</button>
+      <button data-rail="skin">Skin</button>
+      <button data-rail="hair">Hair</button>
+      <button data-rail="clothing">Clothing</button>
+      <button data-rail="capture">Capture</button>
+    </div>
+    <div id="railbody"></div>
+    <div id="leftfoot">
+      <button id="btnTex" class="on" title="Toggle the base model's skin tone vs. a plain grey mannequin">Textures</button>
+      <button id="btnSplat" title="Show the fitted gaussian splat beside the base model, in this canvas">＋ Splat</button>
+      <button id="btnOutfit" title="Show a static preview of the selected Hair/Clothing items, fitted onto an arms-down pose">＋ Outfit</button>
+      <button id="btnDressWalk" title="Dress the WALKING body: the selected garments skinned to every walk frame, tracking the stride in lockstep">＋ Dressed walk</button>
+      <label id="clothToggle" title="Baked cloth: real drape + body collision + shirt-over-shorts layering (D-cloth). Off = rigid skinning."><input type="checkbox" id="chkCloth" checked> Baked cloth</label>
+    </div>
+  </div>
+
+  <!-- CENTER: 3D scene -->
+  <div id="canvas-wrap">
+    <div id="camlabel">Free orbit</div>
+    <div id="toast"></div>
+    <div id="errbar"></div>
+  </div>
+
+  <!-- RIGHT: scene + camera rig controls -->
+  <div id="right">
+    <div class="sec">
+      <h2>Avatar</h2>
+      <div class="row"><label>Motion</label><select id="motionsel"><option>walk</option></select></div>
+      <div class="hint">The scene plays the final animated body. Switch subjects in the <b>Models</b> tab.</div>
+    </div>
+
+    <div class="sec">
+      <h2>Outfit sizing</h2>
+      <div class="row"><label>Hair</label><input id="hairBoost" type="range" min="0.5" max="6" step="0.1" value="1.2"><span class="val" id="hairBoostV">1.2×</span></div>
+      <div class="row"><label>Clothing</label><input id="clothingBoost" type="range" min="0.5" max="6" step="0.1" value="3.0"><span class="val" id="clothingBoostV">3.0×</span></div>
+      <div class="hint">Uniform size multiplier per garment KIND (D92) — the fitter's affine offsets consistently
+      under-size garments (D90/D91); tune per kind instead of relying on one fixed default. Only affects the
+      <b>＋ Outfit</b> preview below, refits live as you drag. Hair tends to distort/shard above ~2×; clothing
+      is safe well past that.</div>
+    </div>
+
+    <div class="sec">
+      <h2>Capture camera rig</h2>
+      <div class="row">
+        <label>Layers</label>
+        <button id="layerMinus" class="ghost" style="min-width:26px">–</button>
+        <span class="val" id="layerN" style="min-width:18px">0</span>
+        <button id="layerPlus" class="ghost" style="min-width:26px">+</button>
+        <span style="flex:1"></span>
+        <button id="showcams" class="on ghost">Show rig</button>
+      </div>
+      <div id="layers"></div>
+      <div class="row"><button id="viewcam" style="width:100%" disabled>▶ View from camera</button></div>
+      <div class="hint">Cameras sit in horizontal <b>layers</b> around the subject — each layer has its own elevation, camera count, arc, radius and lens. Click a camera to select it, then <b>View from camera</b> to see exactly what its lens captures; <b>Exit</b> returns to your canvas view. This is the multi-view rig the fit optimizes gaussians against.</div>
+    </div>
+
+    <div class="sec">
+      <h2>Scene</h2>
+      <div class="row"><button id="btnGrid" class="on ghost">Grid</button><button id="btnWire" class="ghost">Wireframe</button><button id="btnStart" class="on ghost">Start marker</button></div>
+    </div>
+  </div>
+
+  <!-- BOTTOM: transport -->
+  <div id="transport">
+    <button id="play">❚❚ Pause</button>
+    <input id="scrub" type="range" min="0" max="0" value="0">
+    <div class="tspeed"><span>Speed</span><input id="speed" type="range" min="0.1" max="2" step="0.1" value="1" style="width:90px"><span class="val" id="speedv">1.0×</span></div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const wrap = $('canvas-wrap');
+const W = () => wrap.clientWidth, H = () => wrap.clientHeight;
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(W(), H());
+renderer.setClearColor(0x0b0d12, 1);
+wrap.appendChild(renderer.domElement);
+
+// ---- telemetry to the server (so blank-screen causes are visible in the server log) ----
+function slog(){ const m=[].slice.call(arguments).join(' ');
+  try{ fetch('/log',{method:'POST',body:m}); }catch(e){} console.log('[slog]',m); }
+slog('boot: three loaded, wrap', W()+'x'+H(), 'dpr', devicePixelRatio,
+     'gl', (()=>{ try{ const c=renderer.getContext(); return c.getParameter(c.VERSION)+' | '+
+       (c.getExtension('WEBGL_debug_renderer_info')? c.getParameter(c.getExtension('WEBGL_debug_renderer_info').UNMASKED_RENDERER_WEBGL):'renderer?'); }catch(e){ return 'ctx? '+e; } })());
+
+// ---- error surfacing: turn a blank canvas into a readable message ----
+function showErr(msg){ const e=$('errbar'); if(!e) return; e.textContent = '⚠ '+msg; e.style.display='block'; console.error(msg); slog('ERR', msg); }
+function clearErr(){ const e=$('errbar'); if(e) e.style.display='none'; }
+addEventListener('error', ev => showErr((ev.message||'error')+'  ('+(ev.filename||'').split('/').pop()+':'+(ev.lineno||'?')+')'));
+addEventListener('unhandledrejection', ev => { const r=ev.reason; showErr('promise: '+((r&&(r.stack||r.message))||r)); });
+// WebGL shader compile/link failures (e.g. a THREE.WebGLProgram error) never throw a JS
+// exception -- they only console.error -- so forward console.error to the server log too
+// (no devtools access on this headless box).
+const _consoleError = console.error.bind(console);
+console.error = (...a) => { _consoleError(...a); try{ slog('console.error', a.map(String).join(' ').slice(0,500)); }catch(e){} };
+renderer.domElement.addEventListener('webglcontextlost', e => { e.preventDefault(); showErr('WebGL context lost — the GPU dropped the scene. (buffer churn / driver). Try reloading; report this.'); });
+renderer.domElement.addEventListener('webglcontextrestored', () => { clearErr(); });
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0b0d12, 7, 26);
+const camera = new THREE.PerspectiveCamera(42, W()/H(), 0.01, 200);
+camera.position.set(2.6, 1.9, 3.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(0, 0.9, 0);
+controls.zoomSpeed = 2.4;          // fast, responsive dolly (was default 1.0 = the "slow zoom")
+controls.zoomToCursor = true;      // zoom toward the pointer, not just the target
+controls.minDistance = 0.35;
+controls.maxDistance = 40;
+
+scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x202a33, 0.95));
+const key = new THREE.DirectionalLight(0xffffff, 2.3); key.position.set(3,6,4); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 1.0); rim.position.set(-4,3,-3); scene.add(rim);
+
+// ground + grid + start marker
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 64),
+  new THREE.MeshStandardMaterial({ color:0x0e131b, roughness:1, metalness:0 }));
+ground.rotation.x = -Math.PI/2; ground.position.y = -0.001; scene.add(ground);
+const grid = new THREE.GridHelper(28, 56, 0x2a3446, 0x161c26);
+grid.material.transparent = true; grid.material.opacity = 0.6; scene.add(grid);
+const startMarker = new THREE.Group();
+{
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.34, 0.4, 48),
+    new THREE.MeshBasicMaterial({ color:0x3b82f6, transparent:true, opacity:0.7, side:THREE.DoubleSide }));
+  ring.rotation.x = -Math.PI/2; ring.position.y = 0.002; startMarker.add(ring);
+  const ring2 = new THREE.Mesh(new THREE.RingGeometry(0.02, 0.05, 24),
+    new THREE.MeshBasicMaterial({ color:0x3b82f6, transparent:true, opacity:0.9, side:THREE.DoubleSide }));
+  ring2.rotation.x = -Math.PI/2; ring2.position.y = 0.002; startMarker.add(ring2);
+}
+scene.add(startMarker);
+
+// avatar mesh — skin-like PBR (sheen = the soft velvety falloff real skin has at
+// grazing angles; slight clearcoat = a faint oily/moist highlight) instead of a flat
+// diffuse material. Still no UV texture map (see the vertex-color blotch note below
+// and SESSION_HANDOFF "real skin texture" next step) but reads far less plastic.
+const SKIN_TONE = 0xcaa892, MANNEQUIN_TONE = 0x8b909a;
+const material = new THREE.MeshPhysicalMaterial({
+  color: SKIN_TONE, vertexColors: true, roughness: 0.55, metalness: 0.0,
+  sheen: 0.7, sheenRoughness: 0.35, sheenColor: new THREE.Color(0xffb59a),
+  clearcoat: 0.06, clearcoatRoughness: 0.4 });
+let geometry=null, mesh=null;
+
+// low-frequency coherent "blotch" noise (a few summed sine waves of the REST-pose
+// position) so the skin isn't one flat tone -- a cheap stand-in for real albedo
+// variation until the UV-mapped skin bake (SESSION_HANDOFF next step) lands.
+function blotchColors(restPos, V){
+  const col = new Float32Array(V*3);
+  for(let i=0;i<V;i++){
+    const x=restPos[i*3], y=restPos[i*3+1], z=restPos[i*3+2];
+    const n = 0.5 + 0.5*Math.sin(x*11+y*7+z*5) * Math.sin(x*3-y*13+z*9+1.7);
+    const f = 0.88 + 0.24*n;                      // multiplies the base material color
+    col[i*3]=f; col[i*3+1]=f*0.985; col[i*3+2]=f*0.97;   // very slightly desaturate the low end
+  }
+  return col;
+}
+
+// eyeball vertex coloring — these are COLOR MULTIPLIERS against the base material color
+// (vertexColors is multiplicative), not absolute colors: >1 reads lighter than the
+// surrounding skin (sclera), near-0 reads near-black regardless of base tone (pupil).
+// `idx`/`pupilW` come from the server's per-vertex geometry analysis (pose_default_walk.py
+// --stem): pupilW is highest at each eye's most outward-facing vertex (the cornea bulge
+// apex) -- a stand-in for a real iris/pupil texture until one exists.
+function applyEyeColors(col, idx, pupilW){
+  const sclera = [1.18, 1.22, 1.26], pupil = [0.12, 0.10, 0.10];
+  for(let k=0;k<idx.length;k++){
+    const i = idx[k], w = pupilW[k]||0;
+    for(let c=0;c<3;c++) col[i*3+c] = sclera[c]*(1-w) + pupil[c]*w;
+  }
+}
+
+// ---------- animation state ----------
+let T=0, V=0, fps=30, verts=null;   // verts: Float32Array (dequantized) T*V*3
+let frame=0, playing=true, tracking=true, curMtime=null, curStem=null;
+
+function setFrame(f){
+  if(!verts || !mesh) return;
+  frame = ((f % T) + T) % T;
+  const pos = geometry.attributes.position.array;
+  pos.set(verts.subarray(frame*V*3, (frame+1)*V*3));
+  geometry.attributes.position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  $('scrub').value = frame;
+  // keep start-marker under the body centroid (x,z). `pos` already holds THIS
+  // frame (length V*3), so iterate from 0 -- NOT frame*V*3 (that ran off the end
+  // of the single-frame buffer -> undefined -> NaN target -> black canvas).
+  let x=0,z=0;
+  for(let i=0;i<V;i++){ x+=pos[i*3]; z+=pos[i*3+2]; }
+  x/=V; z/=V;
+  if(!Number.isFinite(x)) x=0; if(!Number.isFinite(z)) z=0;
+  startMarker.position.set(x, 0, z);
+  if(tracking && !preview) controls.target.lerp(new THREE.Vector3(x, 0.9, z), 0.2);
+  if(dressWalkOn) updateDressWalkFrame(frame);   // D98: keep clothes in lockstep with the body
+}
+
+// ---------- quantized loader (v3 delta / v2 abs) ----------
+let loading = false;
+async function loadModel(stem, mtime){
+  if(loading) return; loading = true;
+  try { await _loadModel(stem, mtime); }
+  catch(e){ showErr('load '+stem+': '+(e && (e.stack||e.message) || e)); }
+  finally { loading = false; }
+}
+async function _loadModel(stem, mtime){
+  slog('load start', stem, 'mtime', mtime);
+  const eyeMetaP = fetch('/eyemeta.json?stem='+encodeURIComponent(stem), { cache:'no-store' })
+    .then(r=>r.ok?r.json():{idx:[],pupilW:[]}).catch(()=>({idx:[],pupilW:[]}));
+  const resp = await fetch('/data.bin?stem='+encodeURIComponent(stem), { cache:'no-store' });
+  if(!resp.ok) throw new Error('data.bin HTTP '+resp.status);
+  const buf = await resp.arrayBuffer();               // fetch auto-gunzips
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+  if(magic!=='4DGS'){ console.warn('bad magic',magic); return; }
+  const ver = dv.getUint32(4,true);
+  T = dv.getUint32(8,true); V = dv.getUint32(12,true);
+  const F = dv.getUint32(16,true); fps = dv.getFloat32(20,true);
+  let off = 24, mn=[0,0,0], rg=[1,1,1];
+  if(ver>=2){ for(let i=0;i<3;i++){ mn[i]=dv.getFloat32(off,true); off+=4; }
+              for(let i=0;i<3;i++){ rg[i]=dv.getFloat32(off,true); off+=4; } }
+  const N = T*V*3;
+  const bytesPerVert = (ver>=2) ? 2 : 4;   // uint16 (quant) vs float32 (legacy)
+  const need = off + F*3*4 + N*bytesPerVert;
+  if(buf.byteLength < need)
+    throw new Error(`short buffer: got ${buf.byteLength} need ${need} (ver=${ver} T=${T} V=${V} F=${F}). `+
+                    `content-encoding=${resp.headers.get('content-encoding')||'none'} — likely the gzip did not decode.`);
+  const faces = new Uint32Array(buf, off, F*3); off += F*3*4;
+  // v3: temporal-delta int16 -> cumsum -> uint16 quantized -> dequantize.
+  // v2: absolute uint16. (both share the min/range header)
+  const q = new Uint16Array(N);
+  if(ver>=3){
+    const d = new Int16Array(buf, off, N);
+    const stride = V*3;
+    for(let j=0;j<stride;j++) q[j] = d[j] & 0xffff;      // frame 0 (int16 bits = uint16)
+    for(let t=1;t<T;t++){ const b=t*stride, p=b-stride;
+      for(let j=0;j<stride;j++) q[b+j] = (q[p+j] + d[b+j]) & 0xffff; }
+  } else {
+    q.set(new Uint16Array(buf, off, N));
+  }
+  verts = new Float32Array(N);
+  const sx=rg[0]/65535, sy=rg[1]/65535, sz=rg[2]/65535;
+  for(let i=0;i<N;i+=3){
+    verts[i]   = mn[0]+q[i]*sx;
+    verts[i+1] = mn[1]+q[i+1]*sy;
+    verts[i+2] = mn[2]+q[i+2]*sz;
+  }
+
+  const eyeMeta = await eyeMetaP;
+  const vcol = blotchColors(verts.subarray(0, V*3), V);
+  if(eyeMeta.idx && eyeMeta.idx.length) applyEyeColors(vcol, eyeMeta.idx, eyeMeta.pupilW);
+
+  if(mesh){ scene.remove(mesh); geometry.dispose(); }
+  geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(V*3),3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(vcol, 3));
+  geometry.setIndex(new THREE.BufferAttribute(faces.slice(),1));
+  mesh = new THREE.Mesh(geometry, material); scene.add(mesh);
+  slog('eyes:', eyeMeta.idx ? eyeMeta.idx.length : 0, 'verts');
+
+  $('scrub').max = T-1; frame = Math.min(frame, T-1); setFrame(frame);
+  curMtime = mtime; curStem = stem;
+  $('modelstat').textContent = stem+' · '+T+'f · '+V.toLocaleString()+' verts';
+  $('perfstat').textContent = (resp.headers.get('content-length')
+    ? (resp.headers.get('content-length')/1e6).toFixed(1)+' MB gz' : '')+
+    ' · '+(buf.byteLength/1e6).toFixed(1)+' MB raw';
+  // bbox of frame 0 to confirm sane scale/position
+  let bb=[1e9,1e9,1e9,-1e9,-1e9,-1e9];
+  for(let i=0;i<V*3;i+=3){ for(let k=0;k<3;k++){ const val=verts[i+k];
+    if(val<bb[k])bb[k]=val; if(val>bb[3+k])bb[3+k]=val; } }
+  slog('load OK', stem, 'ver'+ver, T+'f', V+'v', 'wire'+(buf.byteLength/1e6).toFixed(1)+'MB',
+       'bbox x['+bb[0].toFixed(2)+','+bb[3].toFixed(2)+'] y['+bb[1].toFixed(2)+','+bb[4].toFixed(2)+'] z['+bb[2].toFixed(2)+','+bb[5].toFixed(2)+']',
+       'cam',camera.position.x.toFixed(1)+','+camera.position.y.toFixed(1)+','+camera.position.z.toFixed(1));
+  toast('loaded '+stem+' ✓');
+  clearErr();
+  loggedFirstDraw = false;   // re-log a draw sample after the (re)load
+}
+
+// switch to a subject model, fetching its mtime first so it loads exactly once
+async function switchModel(stem){
+  let mt = null;
+  try { mt = (await (await fetch('/status.json?stem='+encodeURIComponent(stem))).json()).mtime; } catch(e){}
+  await loadModel(stem, mt);
+}
+
+// ---------- live polling (hot-reload the active model) ----------
+async function poll(){
+  if(!curStem){ return; }
+  try{
+    const s = await (await fetch('/status.json?stem='+encodeURIComponent(curStem),{cache:'no-store'})).json();
+    if(s.ready){ $('statusdot').className='dot live';
+      if(s.mtime!==curMtime) await loadModel(curStem, s.mtime); }
+    else { $('statusdot').className='dot wait'; }
+  }catch(e){ $('statusdot').className='dot'; }
+}
+setInterval(poll, 2000);
+
+// ---------- camera rig (horizontal LAYERS around the subject) ----------
+const rig = new THREE.Group(); scene.add(rig);
+const TARGET = new THREE.Vector3(0, 0.95, 0);       // rig aim point (chest height)
+const LAYER_COLORS = [0x3b82f6, 0x22c55e, 0xf59e0b, 0xa855f7, 0xec4899, 0x14b8a6, 0xef4444, 0x84cc16];
+// each layer: {elev°, count, arc°, radius, fov°}
+let layers = [
+  { elev: 0,  count: 8, arc: 360, radius: 3.0, fov: 42 },
+  { elev: 30, count: 6, arc: 360, radius: 3.2, fov: 42 },
+  { elev: 60, count: 4, arc: 360, radius: 3.6, fov: 42 },
+];
+let rigCams = [];            // flat: {li, ci, group, pos, target, fov}
+let showRig = true;
+let selected = null;         // {li, ci}
+let preview = false, savedView = null;
+
+function layerColor(li){ return LAYER_COLORS[li % LAYER_COLORS.length]; }
+
+function makeGizmo(pos, target, fov, color){
+  const g = new THREE.Group();
+  g.position.copy(pos); g.lookAt(target);     // Group: +Z faces target
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.09,0.07,0.12),
+    new THREE.MeshBasicMaterial({ color:0x11161f })); g.add(body);
+  const lens = new THREE.Mesh(new THREE.ConeGeometry(0.055,0.11,16),
+    new THREE.MeshBasicMaterial({ color })); lens.rotation.x = Math.PI/2; lens.position.z = 0.11; g.add(lens);
+  // frustum wireframe pointing at the subject (+Z), sized by fov
+  const d = 0.42, h = d*Math.tan(fov*Math.PI/360), w = h;
+  const c = [ new THREE.Vector3(-w,-h,d), new THREE.Vector3(w,-h,d), new THREE.Vector3(w,h,d), new THREE.Vector3(-w,h,d) ];
+  const O = new THREE.Vector3(0,0,0);
+  const segs = [O,c[0], O,c[1], O,c[2], O,c[3], c[0],c[1], c[1],c[2], c[2],c[3], c[3],c[0]];
+  const fr = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(segs),
+    new THREE.LineBasicMaterial({ color, transparent:true, opacity:0.55 }));
+  g.add(fr);
+  g.userData.gizmo = true;
+  return g;
+}
+
+function buildRig(){
+  rig.clear(); rigCams = [];
+  layers.forEach((L, li)=>{
+    const n = Math.max(1, L.count|0);
+    const arc = L.arc*Math.PI/180, elev = L.elev*Math.PI/180, rad = L.radius, fov = L.fov;
+    const full = Math.abs(L.arc-360) < 1e-3;
+    const col = layerColor(li);
+    for(let ci=0; ci<n; ci++){
+      const t = n===1 ? 0 : (full ? ci/n : ci/(n-1) - 0.5);
+      const ang = t*arc + Math.PI/2;
+      const pos = new THREE.Vector3(Math.cos(ang)*rad*Math.cos(elev),
+                                    TARGET.y + Math.sin(elev)*rad,
+                                    Math.sin(ang)*rad*Math.cos(elev));
+      const g = makeGizmo(pos, TARGET, fov, col);
+      g.userData.li = li; g.userData.ci = ci;
+      rig.add(g);
+      rigCams.push({ li, ci, group:g, pos, target:TARGET.clone(), fov });
+    }
+  });
+  rig.visible = showRig && !preview;     // never show gizmos inside a camera preview
+  highlightSel();
+  // keep selection valid after a rebuild (e.g. layer removed / camera count lowered)
+  if(selected && !rigCams.some(c=>c.li===selected.li && c.ci===selected.ci)) selectCam(null);
+}
+
+function selCam(){ return selected && rigCams.find(c=>c.li===selected.li && c.ci===selected.ci); }
+function highlightSel(){
+  rigCams.forEach(c=>{
+    const on = selected && c.li===selected.li && c.ci===selected.ci;
+    const lens = c.group.children[1];
+    lens.material.color.setHex(on ? 0xffffff : layerColor(c.li));
+    lens.scale.setScalar(on ? 1.7 : 1.0);
+  });
+}
+function selectCam(sel){
+  selected = sel;
+  highlightSel();
+  const c = selCam();
+  $('viewcam').disabled = !c;
+  $('camlabel').textContent = (preview && c) ? ('Camera view · L'+(c.li+1)+'·C'+(c.ci+1)+' · '+Math.round(c.fov)+'° lens')
+                            : c ? ('Selected · L'+(c.li+1)+'·C'+(c.ci+1)) : 'Free orbit';
+}
+
+function enterPreview(){
+  const c = selCam(); if(!c) return;
+  savedView = { pos:camera.position.clone(), quat:camera.quaternion.clone(), fov:camera.fov,
+                target:controls.target.clone() };
+  preview = true; controls.enabled = false; rig.visible = false;
+  $('viewcam').textContent = '⤺ Exit camera view'; $('viewcam').classList.add('on');
+  selectCam(selected);
+}
+function exitPreview(){
+  preview = false; controls.enabled = true; rig.visible = showRig;
+  if(savedView){ camera.position.copy(savedView.pos); camera.quaternion.copy(savedView.quat);
+    camera.fov = savedView.fov; camera.updateProjectionMatrix(); controls.target.copy(savedView.target); controls.update(); }
+  $('viewcam').textContent = '▶ View from camera'; $('viewcam').classList.remove('on');
+  selectCam(selected);
+}
+// in preview, drive the render camera from the (live) selected rig camera each frame
+function applyPreviewCamera(){
+  const c = selCam(); if(!c){ exitPreview(); return; }
+  camera.position.copy(c.pos); camera.up.set(0,1,0); camera.lookAt(c.target);
+  if(camera.fov !== c.fov){ camera.fov = c.fov; camera.updateProjectionMatrix(); }
+}
+
+// select a gizmo by click (only a real click, never a drag/pan)
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let downXY = null;
+renderer.domElement.addEventListener('pointerdown', e=>{ downXY = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e=>{
+  if(!downXY) return;
+  const moved = Math.hypot(e.clientX-downXY[0], e.clientY-downXY[1]); downXY = null;
+  if(moved > 5 || !showRig || preview) return;    // it was a drag/pan, or rig hidden -> ignore
+  const r = renderer.domElement.getBoundingClientRect();
+  ndc.x = ((e.clientX-r.left)/r.width)*2-1; ndc.y = -((e.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObjects(rig.children, true);
+  if(hits.length){ let g=hits[0].object; while(g && g.userData.li===undefined) g=g.parent;
+    if(g) selectCam({ li:g.userData.li, ci:g.userData.ci }); }
+});
+
+// ---------- render loop ----------
+let last=performance.now(), acc=0, speedMul=1;
+let tickErr = false, loggedFirstDraw = true, drawCount = 0;
+function tick(now){
+  requestAnimationFrame(tick);
+  try {
+    const dt=(now-last)/1000; last=now;
+    if(playing && verts && T>1){ acc += dt*fps*speedMul; if(acc>=1){ setFrame(frame+Math.floor(acc)); acc%=1; } }
+    if(preview) applyPreviewCamera(); else controls.update();
+    if(splatMat && splatGroup.visible) updateSplatSort();
+    renderer.render(scene, camera);
+    drawCount++;
+    if(!loggedFirstDraw && mesh){
+      loggedFirstDraw = true;
+      const gl = renderer.getContext();
+      slog('DRAW sample: canvas', renderer.domElement.width+'x'+renderer.domElement.height,
+           'clientWH', renderer.domElement.clientWidth+'x'+renderer.domElement.clientHeight,
+           'wrap', W()+'x'+H(), 'calls', renderer.info.render.calls, 'tris', renderer.info.render.triangles,
+           'camAspect', camera.aspect.toFixed(3), 'ctxLost', gl.isContextLost(),
+           'meshInScene', scene.children.includes(mesh), 'meshVisible', mesh.visible);
+    }
+  } catch(e){ if(!tickErr){ tickErr=true; showErr('render loop: '+(e && (e.stack||e.message) || e)); } }
+}
+requestAnimationFrame(tick);
+
+// ---------- toast ----------
+function toast(msg, ms=1700){ const t=$('toast'); t.textContent=msg; t.style.display='block';
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.style.display='none', ms); }
+
+// ---------- transport UI ----------
+$('play').onclick = e=>{ playing=!playing; e.target.textContent = playing?'❚❚ Pause':'▶ Play'; };
+$('scrub').oninput = e=>{ playing=false; $('play').textContent='▶ Play'; setFrame(+e.target.value); };
+$('speed').oninput = e=>{ speedMul=+e.target.value; $('speedv').textContent=speedMul.toFixed(1)+'×'; };
+addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); $('play').click(); } });
+
+// ---------- scene toggles ----------
+$('btnGrid').onclick  = e=>{ grid.visible=!grid.visible; ground.visible=grid.visible; e.target.classList.toggle('on'); };
+$('btnWire').onclick  = e=>{ material.wireframe=!material.wireframe; e.target.classList.toggle('on'); };
+$('btnStart').onclick = e=>{ startMarker.visible=!startMarker.visible; e.target.classList.toggle('on'); };
+
+// ---------- base-model texture/skin toggle ----------
+// The live animated mesh has no UV texture map (the CC0 skin textures live on the
+// 13,718-v DEFAULT mesh; the animated mesh is 18,056-v SOMA topology — the D72 split).
+// So this toggles the base material between skin-tone shading and a plain grey mannequin.
+// True UV-mapped photoreal skin on the animated mesh = the albedo-bake + retarget follow-up.
+let texOn = true;
+$('btnTex').onclick = e=>{
+  texOn = !texOn;
+  material.color.setHex(texOn ? SKIN_TONE : MANNEQUIN_TONE);
+  material.roughness = texOn ? 0.55 : 0.92;
+  material.sheen = texOn ? 0.7 : 0.0;
+  material.clearcoat = texOn ? 0.06 : 0.0;
+  material.vertexColors = texOn;                 // blotch variation off for a flat clay mannequin
+  material.needsUpdate = true;
+  e.target.classList.toggle('on', texOn);
+  toast(texOn ? 'base model: skin tone' : 'base model: grey mannequin');
+};
+
+// ---------- fitted-splat compare (renders BESIDE the mesh, same canvas) ----------
+// ply is in the Blender Z-up fit frame -> a group rotated -90°X brings it to three's
+// Y-up; offset +X so it stands next to the animated base model and orbits with it.
+const splatGroup = new THREE.Group();
+splatGroup.rotation.x = -Math.PI/2;   // Z-up (fit frame) -> Y-up (viewer)
+splatGroup.position.x = 1.25;          // stand beside the base model
+splatGroup.visible = false;
+scene.add(splatGroup);
+let splatMat = null, splatPts = null, splatLoading = false;
+let splatN = 0, splatSrc = null;              // splatSrc: the ORIGINAL unsorted per-instance data (never mutated)
+let splatDist = null, splatOrderArr = null;   // reused scratch buffers for the per-frame depth sort below
+
+// RENDERER CHOICE: gaussians are drawn as camera-facing billboard QUADS via GPU instancing,
+// NOT gl.POINTS + gl_PointSize. Reason (found after size/alpha tuning alone didn't fix the
+// "just floating points" look): this box's WebGL context is ANGLE-over-Direct3D11 (see the
+// boot slog: "ANGLE (AMD ... Direct3D11 ..."), and D3D-backed GL implementations have long had
+// unreliable/capped gl_PointSize support -- large point sprites can silently clamp to a few
+// px regardless of what the shader requests, which is architectural, not a tuning problem.
+// Billboarding via ordinary triangles (offsetting each quad corner in VIEW space, where XY is
+// already screen-aligned) sidesteps gl_PointSize entirely and renders identically on every
+// backend. Depth is still sorted back-to-front each frame (painter's algorithm) by physically
+// reordering the instance attribute arrays -- cheap at this gaussian count (a few hundred KB
+// memcpy/frame).
+const SPLAT_VERT = `
+  attribute vec2 corner;
+  attribute vec3 instancePos; attribute vec3 instanceColor;
+  attribute float instanceSize; attribute float instanceAlpha;
+  varying vec3 vColor; varying float vAlpha; varying vec2 vCorner;
+  uniform float uSizeMult;
+  void main(){
+    vColor = instanceColor; vAlpha = instanceAlpha; vCorner = corner;
+    vec4 mv = modelViewMatrix * vec4(instancePos, 1.0);
+    mv.xy += corner * instanceSize * uSizeMult;   // view-space XY = camera-facing plane already
+    gl_Position = projectionMatrix * mv;
+  }`;
+const SPLAT_FRAG = `
+  varying vec3 vColor; varying float vAlpha; varying vec2 vCorner;
+  uniform float uAlphaBoost;
+  void main(){
+    float r2 = dot(vCorner, vCorner) * 4.0;   // corner in [-0.5,0.5] -> 0 center .. 1 edge
+    if(r2 > 1.0) discard;
+    gl_FragColor = vec4(vColor, clamp(vAlpha * uAlphaBoost, 0.0, 1.0) * exp(-r2 * 2.0));
+  }`;
+
+async function loadSplat(){
+  splatLoading = true;
+  try{
+    const buf = await (await fetch('/splat.bin?name=poc_avatar',{cache:'no-store'})).arrayBuffer();
+    const dv = new DataView(buf); const n = dv.getUint32(0, true); const stride = 20; let o = 4;
+    const pos = new Float32Array(n*3), col = new Float32Array(n*3), sz = new Float32Array(n), al = new Float32Array(n);
+    for(let i=0;i<n;i++){ const b=o+i*stride;
+      pos[i*3]=dv.getFloat32(b,true); pos[i*3+1]=dv.getFloat32(b+4,true); pos[i*3+2]=dv.getFloat32(b+8,true);
+      sz[i]=dv.getFloat32(b+12,true);
+      col[i*3]=dv.getUint8(b+16)/255; col[i*3+1]=dv.getUint8(b+17)/255; col[i*3+2]=dv.getUint8(b+18)/255;
+      al[i]=dv.getUint8(b+19)/255; }
+    splatN = n; splatSrc = { pos, col, sz, al };
+
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute('corner', new THREE.BufferAttribute(new Float32Array([-.5,-.5, .5,-.5, .5,.5, -.5,.5]), 2));
+    g.setIndex([0,1,2, 0,2,3]);
+    g.setAttribute('instancePos',   new THREE.InstancedBufferAttribute(pos.slice(),3));
+    g.setAttribute('instanceColor', new THREE.InstancedBufferAttribute(col.slice(),3));
+    g.setAttribute('instanceSize',  new THREE.InstancedBufferAttribute(sz.slice(),1));
+    g.setAttribute('instanceAlpha', new THREE.InstancedBufferAttribute(al.slice(),1));
+    g.instanceCount = n;
+    splatMat = new THREE.ShaderMaterial({ uniforms:{ uSizeMult:{value:1.3}, uAlphaBoost:{value:2.2} },
+      vertexShader:SPLAT_VERT, fragmentShader:SPLAT_FRAG,
+      transparent:true, depthWrite:false, side:THREE.DoubleSide });
+    splatPts = new THREE.Mesh(g, splatMat); splatGroup.add(splatPts);
+    splatDist = new Float32Array(n); splatOrderArr = new Array(n); for(let i=0;i<n;i++) splatOrderArr[i]=i;
+    slog('splat loaded', n, 'gaussians (instanced billboard quads)');
+    toast(n.toLocaleString()+' gaussians (fit vs mesh)');
+  }catch(e){ showErr('splat load: '+(e&&(e.stack||e.message)||e)); }
+  finally{ splatLoading = false; }
+}
+$('btnSplat').onclick = async e=>{
+  if(!splatPts && !splatLoading) await loadSplat();
+  splatGroup.visible = !splatGroup.visible;
+  e.target.classList.toggle('on', splatGroup.visible);
+  if(splatGroup.visible) controls.target.set(0.6, 0.9, 0);   // frame both side by side
+};
+
+// Painter's-algorithm depth sort: alpha-blended instances draw in ATTRIBUTE-ARRAY order
+// (instancing has no separate "index buffer" for draw order the way a plain indexed mesh
+// does -- instance i always uses attribute-array slot i), so without this, overlapping
+// splats composite in arbitrary order and the result reads as noisy rather than a coherent
+// surface. Cheap at this gaussian count: transform only the CAMERA into the splat's local
+// space (not every point), sort once, then physically rewrite the 4 instance attribute
+// arrays in that order (a few hundred KB memcpy/frame, trivial). `splatSrc` holds the
+// ORIGINAL never-mutated data so this can re-sort from scratch every frame without drift.
+const _splatInvMat = new THREE.Matrix4(), _splatLocalCam = new THREE.Vector3();
+function updateSplatSort(){
+  if(!splatPts || !splatSrc) return;
+  splatGroup.updateMatrixWorld();
+  _splatInvMat.copy(splatGroup.matrixWorld).invert();
+  _splatLocalCam.copy(camera.position).applyMatrix4(_splatInvMat);
+  const { pos, col, sz, al } = splatSrc;
+  const n = splatN, cx=_splatLocalCam.x, cy=_splatLocalCam.y, cz=_splatLocalCam.z;
+  for(let i=0;i<n;i++){
+    const dx=pos[i*3]-cx, dy=pos[i*3+1]-cy, dz=pos[i*3+2]-cz;
+    splatDist[i] = dx*dx+dy*dy+dz*dz;
+  }
+  splatOrderArr.sort((a,b)=> splatDist[b]-splatDist[a]);   // far first (painter's algorithm)
+  const g = splatPts.geometry;
+  const oPos=g.attributes.instancePos.array, oCol=g.attributes.instanceColor.array,
+        oSz=g.attributes.instanceSize.array, oAl=g.attributes.instanceAlpha.array;
+  for(let i=0;i<n;i++){
+    const j = splatOrderArr[i];
+    oPos[i*3]=pos[j*3]; oPos[i*3+1]=pos[j*3+1]; oPos[i*3+2]=pos[j*3+2];
+    oCol[i*3]=col[j*3]; oCol[i*3+1]=col[j*3+1]; oCol[i*3+2]=col[j*3+2];
+    oSz[i]=sz[j]; oAl[i]=al[j];
+  }
+  g.attributes.instancePos.needsUpdate = true; g.attributes.instanceColor.needsUpdate = true;
+  g.attributes.instanceSize.needsUpdate = true; g.attributes.instanceAlpha.needsUpdate = true;
+}
+
+// ---------- camera-rig UI (per-layer controls) ----------
+const DEF_LAYER = { elev: 25, count: 6, arc: 360, radius: 3.2, fov: 42 };
+function hex(n){ return '#'+n.toString(16).padStart(6,'0'); }
+function renderLayers(){
+  $('layerN').textContent = layers.length;
+  const host = $('layers'); host.innerHTML = '';
+  layers.forEach((L, li)=>{
+    const el = document.createElement('div'); el.className = 'layer';
+    const sl = (key, lab, min, max, step, fmt) =>
+      `<div class="rr"><label>${lab}</label>`+
+      `<input type="range" data-li="${li}" data-key="${key}" min="${min}" max="${max}" step="${step}" value="${L[key]}">`+
+      `<span class="val" id="v_${li}_${key}">${fmt?fmt(L[key]):L[key]}</span></div>`;
+    el.innerHTML =
+      `<div class="lhead"><span class="swatch" style="background:${hex(layerColor(li))}"></span>`+
+      `<span class="lt">Layer ${li+1}</span>`+
+      `<button class="lx" data-del="${li}" title="remove layer">×</button></div>`+
+      sl('elev','Elev°',-30,80,5)+
+      sl('count','Cams',1,24,1)+
+      sl('arc','Arc°',30,360,10)+
+      sl('radius','Radius',1.2,7,0.1, x=>(+x).toFixed(1))+
+      sl('fov','Lens°',18,80,1);
+    host.appendChild(el);
+  });
+  host.querySelectorAll('input[type=range]').forEach(inp=>{
+    inp.oninput = ()=>{
+      const li=+inp.dataset.li, key=inp.dataset.key;
+      layers[li][key] = (key==='radius') ? +inp.value : (key==='count'? (+inp.value|0) : +inp.value);
+      const vs = $(`v_${li}_${key}`); if(vs) vs.textContent = key==='radius'? (+inp.value).toFixed(1) : inp.value;
+      buildRig();
+    };
+  });
+  host.querySelectorAll('.lx').forEach(b=> b.onclick = ()=>{ layers.splice(+b.dataset.del,1); renderLayers(); buildRig(); });
+}
+$('layerPlus').onclick  = ()=>{ if(layers.length<8){ layers.push({...DEF_LAYER, elev: Math.min(80, (layers.at(-1)?.elev??0)+25)}); renderLayers(); buildRig(); } };
+$('layerMinus').onclick = ()=>{ if(layers.length>0){ layers.pop(); renderLayers(); buildRig(); } };
+$('showcams').onclick   = e=>{ showRig=!showRig; if(!preview) rig.visible=showRig; e.target.classList.toggle('on', showRig); };
+$('viewcam').onclick    = ()=> preview ? exitPreview() : enterPreview();
+
+// ---------- left rail (models + asset tabs) ----------
+let models=[], selStem=null, activeRail='models';
+const railbody = $('railbody');
+document.querySelectorAll('#railtabs button').forEach(b=>{
+  b.onclick = ()=>{ document.querySelectorAll('#railtabs button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); activeRail=b.dataset.rail; renderRail(); };
+});
+
+async function loadModels(){
+  const j = await (await fetch('/models.json')).json();
+  models = j.models || [];
+  selStem = (models.find(m=>m.stem===j.default)||models[0]||{}).stem;
+  if(selStem){
+    // grab the real mtime first so the model loads ONCE (not null-then-real)
+    let mt = null;
+    try { mt = (await (await fetch('/status.json?stem='+encodeURIComponent(selStem))).json()).mtime; } catch(e){}
+    await loadModel(selStem, mt);
+  }
+  if(activeRail==='models') renderRail();
+}
+
+function renderRail(){
+  if(activeRail==='models'){
+    railbody.innerHTML = '<div class="cards" id="mcards"></div>' +
+      '<div class="hint">Each card is a captured/registered subject. Selecting one loads its final animated body into the scene. New subjects arrive from the <b>Capture</b> tab.</div>';
+    const wrapc = $('mcards');
+    models.forEach(m=>{
+      const c = document.createElement('div'); c.className='card'+(m.stem===selStem?' sel':'');
+      c.innerHTML = `<span class="thumb" style="background-image:url('${m.thumb}?t=${Date.now()}')"></span>`+
+                    `<div class="cap">${m.label}<br><span style="color:var(--dim2)">${m.frames}f · ${(m.verts/1000).toFixed(1)}k v</span></div>`;
+      c.onclick = async ()=>{ selStem=m.stem; document.querySelectorAll('#mcards .card').forEach(x=>x.classList.remove('sel'));
+        c.classList.add('sel'); await switchModel(m.stem); };
+      wrapc.appendChild(c);
+    });
+    return;
+  }
+  if(activeRail==='capture'){ renderCapture(); return; }
+  renderAssetTab(activeRail);   // skin | hair | clothing
+}
+
+function renderAssetTab(kind){
+  const icon = {skin:'🧑', hair:'💇', clothing:'👕'}[kind]||'📦';
+  railbody.innerHTML = '';
+  if(kind==='hair' || kind==='clothing') renderCatalog(kind);
+  const up = document.createElement('div');
+  up.innerHTML =
+    `<div class="drop" id="drop">⬆ Drop ${kind} package<br><span style="color:var(--dim2)">images / .glb / .ply</span></div>`+
+    `<div class="assetlist" id="alist"></div>`+
+    `<div class="hint">Uploaded ${kind} packages are stored as attachable layers. Binding a layer onto the avatar (recolor/swap, D63) runs in the fit pipeline — front-end wiring is live; the binder is the next backend step.</div>`;
+  railbody.appendChild(up);
+  wireDrop(kind);
+  refreshAssets(kind);
+}
+
+// ---------- CC0 hair/eyebrows/clothing catalog (D84) ----------
+// Real selectable items fit onto Anny (mhclo_fit.py), pre-validated server-side (bad/
+// broken assets are silently excluded from the catalog, not shown as broken cards).
+const outfitSel = { hair:null, eyebrows:null, top:null, bottom:null };   // slot -> asset id or null
+const outfitBoost = { hair:1.2, clothing:3.0 };   // D92 -- matches outfit_lib's D91 server defaults
+const catalogCache = {};   // kind -> assets[]
+async function fetchCatalog(kind){
+  if(catalogCache[kind]) return catalogCache[kind];
+  const j = await (await fetch('/catalog.json?kind='+kind)).json();
+  catalogCache[kind] = j.assets || [];
+  return catalogCache[kind];
+}
+function outfitCard(a, slotKey, host){
+  const c = document.createElement('div'); c.className = 'card'+(outfitSel[slotKey]===a.id?' sel':'');
+  c.innerHTML = (a.thumb ? `<span class="thumb" style="background-image:url('${a.thumb}')"></span>`
+                         : `<span class="thumb txt">${a.name}</span>`) +
+                `<div class="cap">${a.name}</div>`;
+  c.onclick = () => {
+    outfitSel[slotKey] = (outfitSel[slotKey] === a.id) ? null : a.id;
+    host.querySelectorAll('.card').forEach(x=>x.classList.remove('sel'));
+    if(outfitSel[slotKey]) c.classList.add('sel');
+    refreshOutfitPreview();
+    refreshDressWalk();
+  };
+  return c;
+}
+async function renderCatalog(kind){
+  const groups = kind==='hair' ? [['hair','Hair','hair'],['eyebrows','Eyebrows','eyebrows']]
+                                : [['clothing','Tops','top'],['clothing','Bottoms','bottom']];
+  for(const [fetchKind, label, slotKey] of groups){
+    const title = document.createElement('div'); title.className='grouptitle'; title.textContent=label;
+    railbody.appendChild(title);
+    const wrap = document.createElement('div'); wrap.className='cards'; railbody.appendChild(wrap);
+    const all = await fetchCatalog(fetchKind);
+    const items = fetchKind==='clothing' ? all.filter(a=>a.slot===slotKey) : all;
+    items.forEach(a => wrap.appendChild(outfitCard(a, slotKey, wrap)));
+    if(!items.length){ const e=document.createElement('div'); e.className='hint'; e.textContent='none available'; railbody.appendChild(e); }
+  }
+}
+
+// ---------- static outfit preview (hair + clothing, arms-down pose) ----------
+// Live-composed on the server from the SAME arms-down basemesh math compose_avatar.py
+// uses (outfit_lib.py, D84). This is the static "try it on" preview standing beside the
+// animated body (arms-down). For the garments SKINNED to the actual walk (tracking the
+// stride in lockstep) use the "＋ Dressed walk" toggle below (D98, /outfit_walk.bin).
+const outfitGroup = new THREE.Group();
+outfitGroup.rotation.x = -Math.PI/2;    // Anny's Z-up frame -> three's Y-up
+outfitGroup.position.x = -1.25;         // stand on the opposite side from the splat compare
+outfitGroup.visible = false;
+scene.add(outfitGroup);
+const outfitMaterial = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.75, metalness:0 });
+let outfitMesh = null, outfitLoading = false, outfitDirty = false;
+
+async function loadOutfitPreview(){
+  if(!Object.values(outfitSel).some(Boolean)){
+    if(outfitMesh) outfitMesh.visible = false;
+    return;
+  }
+  if(outfitLoading){ outfitDirty = true; return; }
+  outfitLoading = true;
+  try{
+    const qs = Object.entries(outfitSel).filter(([,v])=>v).map(([k,v])=>k+'='+encodeURIComponent(v))
+      .concat(Object.entries(outfitBoost).map(([k,v])=>k+'_boost='+v))
+      .join('&');
+    const buf = await (await fetch('/compose.bin?'+qs, {cache:'no-store'})).arrayBuffer();
+    const dv = new DataView(buf);
+    const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+    if(magic !== 'CMP1') throw new Error('bad compose magic '+magic);
+    const V = dv.getUint32(4,true), F = dv.getUint32(8,true);
+    // layout: pos (f32) -> idx (u32) -> color (u8, last -- V*3 bytes isn't guaranteed
+    // 4-byte-aligned, so it must come after everything that needs alignment, see D85)
+    let o = 12;
+    const pos = new Float32Array(buf, o, V*3); o += V*3*4;
+    const idx = new Uint32Array(buf, o, F*3); o += F*3*4;
+    const colU8 = new Uint8Array(buf, o, V*3);
+    const col = new Float32Array(V*3);
+    for(let i=0;i<V*3;i++) col[i] = colU8[i]/255;
+
+    if(outfitMesh){ outfitGroup.remove(outfitMesh); outfitMesh.geometry.dispose(); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos.slice(),3));
+    g.setAttribute('color', new THREE.BufferAttribute(col,3));
+    g.setIndex(new THREE.BufferAttribute(idx.slice(),1));
+    g.computeVertexNormals();
+    outfitMesh = new THREE.Mesh(g, outfitMaterial); outfitMesh.visible = true;
+    outfitGroup.add(outfitMesh);
+    slog('outfit preview loaded', V, 'verts', F, 'faces', JSON.stringify(outfitSel));
+  }catch(e){ showErr('outfit preview: '+(e&&(e.stack||e.message)||e)); }
+  finally{
+    outfitLoading = false;
+    if(outfitDirty){ outfitDirty = false; loadOutfitPreview(); }
+  }
+}
+function refreshOutfitPreview(){ if(outfitGroup.visible) loadOutfitPreview(); }
+
+// ---------- DRESSED WALK (D98): garments skinned to every walk frame, in lockstep ----------
+// Unlike the static ＋Outfit preview, this loads the SAME garment posed to each of the walk's
+// F frames (server /outfit_walk.bin) already in the viewer's display frame (R_fixed+T[t] baked
+// in server-side, matching the body's transform to 1e-4 mm). The mesh is added straight to the
+// scene (no group rotation/offset) and its positions are swapped per frame in setFrame(), in
+// lockstep with the body -> the first dressed WALKING avatar.
+const dressWalkMaterial = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.8, metalness:0 });
+let dressWalkMesh=null, dressWalkVerts=null, dressWalkV=0, dressWalkF=0, dressWalkOn=false, dressWalkLoading=false, dressWalkDirty=false;
+
+function updateDressWalkFrame(fr){
+  if(!dressWalkMesh || !dressWalkVerts || dressWalkF<1) return;
+  const f = ((fr % dressWalkF) + dressWalkF) % dressWalkF;
+  const pos = dressWalkMesh.geometry.attributes.position.array;
+  pos.set(dressWalkVerts.subarray(f*dressWalkV*3, (f+1)*dressWalkV*3));
+  dressWalkMesh.geometry.attributes.position.needsUpdate = true;
+  dressWalkMesh.geometry.computeVertexNormals();
+}
+
+async function loadDressWalk(){
+  if(!Object.values(outfitSel).some(Boolean)){ if(dressWalkMesh) dressWalkMesh.visible=false; return; }
+  if(dressWalkLoading){ dressWalkDirty=true; return; }
+  dressWalkLoading = true;
+  try{
+    const clothOn = (document.getElementById('chkCloth')||{}).checked !== false;
+    const qs = Object.entries(outfitSel).filter(([,v])=>v).map(([k,v])=>k+'='+encodeURIComponent(v))
+      .concat(Object.entries(outfitBoost).map(([k,v])=>k+'_boost='+v))
+      .concat(['stem='+encodeURIComponent(curStem||'walk_face'), 'cloth='+(clothOn?'1':'0')]).join('&');
+    const resp = await fetch('/outfit_walk.bin?'+qs, {cache:'no-store'});
+    if(!resp.ok){ const msg=await resp.text(); throw new Error('HTTP '+resp.status+' '+msg); }
+    const buf = await resp.arrayBuffer();               // fetch auto-gunzips
+    const dv = new DataView(buf);
+    const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+    if(magic!=='OWK1') throw new Error('bad dress-walk magic '+magic);
+    const F = dv.getUint32(4,true), V = dv.getUint32(8,true), Ftri = dv.getUint32(12,true);
+    // layout: faces(u32) -> verts(f32, F*V*3) -> color(u8, last). faces/verts stay 4-aligned.
+    let o=16;
+    const faces = new Uint32Array(buf, o, Ftri*3); o += Ftri*3*4;
+    dressWalkVerts = new Float32Array(buf.slice(o, o+F*V*3*4)); o += F*V*3*4;
+    const colU8 = new Uint8Array(buf, o, V*3);
+    const col = new Float32Array(V*3);
+    for(let i=0;i<V*3;i++) col[i]=colU8[i]/255;
+    dressWalkV = V; dressWalkF = F;
+    if(dressWalkMesh){ scene.remove(dressWalkMesh); dressWalkMesh.geometry.dispose(); }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(V*3),3));
+    g.setAttribute('color', new THREE.BufferAttribute(col,3));
+    g.setIndex(new THREE.BufferAttribute(faces.slice(),1));
+    dressWalkMesh = new THREE.Mesh(g, dressWalkMaterial); dressWalkMesh.visible = dressWalkOn;
+    scene.add(dressWalkMesh);
+    updateDressWalkFrame(frame);
+    slog('dressed walk loaded', F+'f', V+'v', Ftri+'tri', JSON.stringify(outfitSel));
+  }catch(e){ showErr('dressed walk: '+(e&&(e.stack||e.message)||e)); }
+  finally{ dressWalkLoading=false; if(dressWalkDirty){ dressWalkDirty=false; loadDressWalk(); } }
+}
+function refreshDressWalk(){ if(dressWalkOn) loadDressWalk(); }
+{ const cc=document.getElementById('chkCloth'); if(cc) cc.onchange=()=>refreshDressWalk(); }
+$('btnDressWalk').onclick = async e => {
+  dressWalkOn = !dressWalkOn;
+  e.target.classList.toggle('on', dressWalkOn);
+  if(dressWalkMesh) dressWalkMesh.visible = dressWalkOn;
+  if(dressWalkOn){
+    if(!Object.values(outfitSel).some(Boolean)) toast('pick items in the Hair / Clothing tabs', 2400);
+    else await loadDressWalk();
+  }
+};
+$('hairBoost').oninput = e=>{ outfitBoost.hair=+e.target.value; $('hairBoostV').textContent=outfitBoost.hair.toFixed(1)+'×'; refreshOutfitPreview(); refreshDressWalk(); };
+$('clothingBoost').oninput = e=>{ outfitBoost.clothing=+e.target.value; $('clothingBoostV').textContent=outfitBoost.clothing.toFixed(1)+'×'; refreshOutfitPreview(); refreshDressWalk(); };
+$('btnOutfit').onclick = async e => {
+  outfitGroup.visible = !outfitGroup.visible;
+  e.target.classList.toggle('on', outfitGroup.visible);
+  if(outfitGroup.visible){
+    controls.target.set(-0.6, 0.9, 0);
+    if(!Object.values(outfitSel).some(Boolean)) toast('pick items in the Hair / Clothing tabs', 2400);
+    else await loadOutfitPreview();
+  }
+};
+async function refreshAssets(kind){
+  try{
+    const j = await (await fetch('/assets.json?kind='+kind)).json();
+    const list = $('alist'); if(!list) return; list.innerHTML='';
+    (j.assets||[]).forEach(a=>{
+      const isImg = /\.(png|jpe?g)$/i.test(a.name);
+      const row = document.createElement('div'); row.className='assetrow';
+      row.innerHTML = `<span class="sw" style="${isImg?`background-image:url('${a.url}')`:''}">${isImg?'':'📦'}</span>`+
+                      `<span class="nm">${a.name}</span><span style="color:var(--dim2)">${(a.size/1024).toFixed(0)}k</span>`;
+      list.appendChild(row);
+    });
+  }catch(e){}
+}
+
+function renderCapture(){
+  railbody.innerHTML =
+    `<div class="drop" id="drop">⬆ Drop multi-view T-pose<br><span style="color:var(--dim2)">upload a person's calibrated photos</span></div>`+
+    `<div class="assetlist" id="alist"></div>`+
+    `<div class="row" style="margin-top:12px"><label style="min-width:52px">Onto</label><select id="fitmodel" class="txtin"></select></div>`+
+    `<button class="primary" id="fitbtn" disabled>Fit gaussians → drop into scene</button>`+
+    `<div class="hint">Upload calibrated T-pose views of a real person → the fit pipeline optimizes photoreal gaussians against those images and anchors them to the selected rig (D74). This front-end queues the job; the fit worker is the make-or-break backend milestone in progress.</div>`;
+  wireDrop('capture');
+  refreshAssets('capture');
+  const sel = $('fitmodel'); sel.innerHTML = models.map(m=>`<option value="${m.stem}">${m.label}</option>`).join('');
+  const btn = $('fitbtn');
+  refreshAssets('capture').then(()=>{});
+  fetch('/assets.json?kind=capture').then(r=>r.json()).then(j=>{ btn.disabled = !(j.assets&&j.assets.length); });
+  btn.onclick = async ()=>{
+    const cap = await (await fetch('/assets.json?kind=capture')).json();
+    const capture = (cap.assets&&cap.assets[0]) ? cap.assets[0].name : null;
+    const model = sel.value;
+    btn.disabled=true; btn.textContent='Queuing fit…';
+    const job = await (await fetch('/fit', {method:'POST', body:JSON.stringify({model, capture})})).json();
+    toast('fit job '+job.id+' queued ('+job.status+')', 2600);
+    btn.textContent='Fit gaussians → drop into scene'; btn.disabled=false;
+  };
+}
+
+function wireDrop(kind){
+  const drop = $('drop'); if(!drop) return;
+  const pick = ()=>{ const inp=document.createElement('input'); inp.type='file'; inp.multiple=true;
+    inp.onchange=()=>upload(kind, inp.files); inp.click(); };
+  drop.onclick = pick;
+  drop.ondragover = e=>{ e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = ()=> drop.classList.remove('over');
+  drop.ondrop = e=>{ e.preventDefault(); drop.classList.remove('over'); upload(kind, e.dataTransfer.files); };
+}
+async function upload(kind, files){
+  if(!files || !files.length) return;
+  toast('uploading '+files.length+' file(s)…');
+  for(const f of files){
+    await fetch('/upload/'+kind, { method:'POST', headers:{'X-Filename': f.name}, body: await f.arrayBuffer() });
+  }
+  toast('uploaded ✓');
+  if(kind==='capture'){ refreshAssets('capture'); const b=$('fitbtn'); if(b) b.disabled=false; }
+  else refreshAssets(kind);
+}
+
+// ---------- resize ----------
+addEventListener('resize', ()=>{ camera.aspect=W()/H(); camera.updateProjectionMatrix(); renderer.setSize(W(),H()); });
+new ResizeObserver(()=>{ camera.aspect=W()/H(); camera.updateProjectionMatrix(); renderer.setSize(W(),H()); }).observe(wrap);
+
+// ---------- boot ----------
+renderLayers();
+buildRig();
+loadModels();
+setTimeout(poll, 300);
+</script>
+</body>
+</html>

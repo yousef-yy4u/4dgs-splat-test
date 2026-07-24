@@ -1,0 +1,200 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Textured-mesh skin test — can the browser carry it without splats?</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; height:100%; background:#0d0f12; color:#e8eaed;
+              font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+  #cv { position:fixed; inset:0; display:block; }
+  .panel { position:fixed; background:rgba(16,19,24,.86); border:1px solid #262b33;
+           border-radius:10px; padding:10px 12px; backdrop-filter:blur(8px); }
+  #rail { left:14px; top:14px; width:210px; }
+  #hud  { right:14px; top:14px; min-width:180px; font-variant-numeric:tabular-nums; }
+  h1 { font-size:13px; margin:0 0 8px; letter-spacing:.02em; }
+  .grp { margin:10px 0 0; }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:#8b93a1; margin-bottom:4px; }
+  button { display:block; width:100%; margin:3px 0; padding:6px 8px; text-align:left; cursor:pointer;
+           background:#1a1f27; color:#dfe3e8; border:1px solid #2b313b; border-radius:6px; font:inherit; }
+  button:hover { background:#232a34; }
+  button[data-on="1"] { background:#2d6cdf; border-color:#3d7cf0; color:#fff; }
+  input[type=range] { width:100%; }
+  .row { display:flex; justify-content:space-between; gap:10px; }
+  .row span:last-child { color:#9fb4d8; }
+  a { color:#6ea8ff; }
+  #err { position:fixed; left:14px; bottom:14px; right:14px; max-height:30vh; overflow:auto;
+         color:#ff9b9b; white-space:pre-wrap; display:none; }
+</style>
+<canvas id="cv"></canvas>
+
+<div class="panel" id="rail">
+  <h1>Textured mesh — no splats</h1>
+  <div class="grp">
+    <div class="lbl">Shading</div>
+    <button id="bFull"  data-on="1">Full PBR (color+normal+rough)</button>
+    <button id="bAlb">Albedo only (flat)</button>
+    <button id="bNorm">Normal map off</button>
+    <button id="bWire">Wireframe</button>
+  </div>
+  <div class="grp">
+    <div class="lbl">Camera</div>
+    <button id="bHead">Face close-up</button>
+    <button id="bBody">Full body</button>
+    <button id="bSpin" data-on="1">Auto-rotate</button>
+  </div>
+  <div class="grp">
+    <div class="lbl">Environment <span id="envv">1.00</span></div>
+    <input id="env" type="range" min="0" max="3" step="0.05" value="1">
+    <div class="lbl" style="margin-top:8px">Key light <span id="keyv">2.0</span></div>
+    <input id="key" type="range" min="0" max="6" step="0.1" value="2">
+    <div class="lbl" style="margin-top:8px">Sheen (peach fuzz) <span id="shv">0.35</span></div>
+    <input id="sh" type="range" min="0" max="1" step="0.01" value="0.35">
+  </div>
+  <div class="grp"><a href="/splat">→ compare with the splat</a></div>
+</div>
+
+<div class="panel" id="hud">
+  <div class="row"><span>fps</span><span id="fps">—</span></div>
+  <div class="row"><span>triangles</span><span id="tris">—</span></div>
+  <div class="row"><span>textures</span><span id="tex">—</span></div>
+  <div class="row"><span>GLB over wire</span><span id="wire">—</span></div>
+  <div class="row"><span>load</span><span id="load">—</span></div>
+</div>
+<pre class="panel" id="err"></pre>
+
+<script type="importmap">
+{ "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const errBox = document.getElementById('err');
+function fail(...a) {                       // D80 lesson: never let a GL/load failure be silent
+  errBox.style.display = 'block';
+  errBox.textContent += a.map(x => x && x.stack ? x.stack : String(x)).join(' ') + '\n';
+  try { fetch('/log', {method:'POST', body: JSON.stringify({page:'skintest', msg:a.map(String).join(' ')})}); } catch(e){}
+}
+window.addEventListener('error', e => fail('window.error:', e.message));
+window.addEventListener('unhandledrejection', e => fail('unhandled:', e.reason));
+
+const canvas = document.getElementById('cv');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;   // without this, PBR skin reads as plastic
+renderer.toneMappingExposure = 1.0;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0f12);
+const camera = new THREE.PerspectiveCamera(32, 1, 0.01, 100);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.autoRotateSpeed = 1.2; controls.autoRotate = true;
+
+// Image-based lighting is what makes skin read as skin. RoomEnvironment is a procedural
+// studio box -> PMREM, so there is no external HDRI to download or license.
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+scene.environment = envRT.texture;
+
+const key = new THREE.DirectionalLight(0xfff2e6, 2.0); key.position.set(1.4, 2.0, 2.2); scene.add(key);
+const fill = new THREE.DirectionalLight(0xdce8ff, 0.5); fill.position.set(-2.0, 0.6, 1.0); scene.add(fill);
+const rim  = new THREE.DirectionalLight(0xffffff, 1.1); rim.position.set(-0.6, 1.4, -2.4); scene.add(rim);
+
+let skinMat = null, eyeMat = null, root = null, headY = 1.55;
+const t0 = performance.now();
+
+const loader = new GLTFLoader();
+fetch('/skin_test.glb').then(r => {
+  if (!r.ok) throw new Error('GLB fetch ' + r.status);
+  document.getElementById('wire').textContent = (+r.headers.get('content-length') / 1e6).toFixed(1) + ' MB';
+  return r.arrayBuffer();
+}).then(buf => new Promise((res, rej) => loader.parse(buf, '', res, rej)))
+  .then(gltf => {
+    root = gltf.scene; scene.add(root);
+    let tris = 0, texRes = 0;
+    root.traverse(o => {
+      if (!o.isMesh) return;
+      tris += o.geometry.index ? o.geometry.index.count / 3 : o.geometry.attributes.position.count / 3;
+      const m = o.material;
+      if (m.map) m.map.colorSpace = THREE.SRGBColorSpace;
+      if (m.normalMap) {                             // only the skin primitive carries a normal map
+        m.map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        texRes = m.map.image.width;
+        skinMat = new THREE.MeshPhysicalMaterial({
+          map: m.map, normalMap: m.normalMap, roughnessMap: m.roughnessMap,
+          metalness: 0.0, roughness: 1.0,
+          sheen: 0.35, sheenRoughness: 0.75, sheenColor: new THREE.Color(0xffd9c9),
+          clearcoat: 0.06, clearcoatRoughness: 0.5,
+        });
+        skinMat.userData.nm = skinMat.normalMap;   // stash so the toggles can restore them
+        skinMat.userData.rm = skinMat.roughnessMap;
+        o.material = skinMat;
+      } else {                                       // the eyeballs: iris texture + wet cornea
+        eyeMat = new THREE.MeshPhysicalMaterial({ map: m.map, metalness: 0, roughness: 0.12,
+                                                  clearcoat: 1.0, clearcoatRoughness: 0.03 });
+        o.material = eyeMat;
+      }
+    });
+    const box = new THREE.Box3().setFromObject(root);
+    headY = box.max.y - (box.max.y - box.min.y) * 0.06;
+    document.getElementById('tris').textContent = Math.round(tris).toLocaleString();
+    document.getElementById('tex').textContent = texRes ? `${texRes}²` : 'none';
+    document.getElementById('load').textContent = ((performance.now() - t0) / 1000).toFixed(2) + ' s';
+    viewBody();
+  }).catch(e => fail('GLB load failed:', e));
+
+// The mesh faces +Z (see export_skin_glb.py), so the camera sits on +Z with a slight offset.
+function look(target, dist, fov) {
+  camera.fov = fov; camera.updateProjectionMatrix();
+  controls.target.set(0, target, 0);
+  camera.position.set(dist * 0.28, target + dist * 0.06, dist * 0.96);
+  controls.minDistance = dist * 0.3; controls.maxDistance = dist * 6; controls.update();
+}
+const viewBody = () => look(0.85, 3.2, 32);
+const viewHead = () => look(headY, 0.62, 24);
+
+const on = (el, v) => el.dataset.on = v ? '1' : '';
+const B = id => document.getElementById(id);
+B('bBody').onclick = viewBody;
+B('bHead').onclick = viewHead;
+B('bSpin').onclick = () => { controls.autoRotate = !controls.autoRotate; on(B('bSpin'), controls.autoRotate); };
+
+let albedoOnly = false, normalOff = false, wire = false;
+function applyShading() {
+  if (!skinMat) return;
+  skinMat.normalMap = (normalOff || albedoOnly) ? null : skinMat.userData.nm;
+  skinMat.roughnessMap = albedoOnly ? null : skinMat.userData.rm;
+  skinMat.roughness = albedoOnly ? 0.9 : 1.0;
+  skinMat.sheen = albedoOnly ? 0 : +B('sh').value;
+  skinMat.wireframe = wire; if (eyeMat) eyeMat.wireframe = wire;
+  skinMat.needsUpdate = true;
+  on(B('bFull'), !albedoOnly && !normalOff && !wire); on(B('bAlb'), albedoOnly);
+  on(B('bNorm'), normalOff); on(B('bWire'), wire);
+}
+B('bFull').onclick = () => { albedoOnly = normalOff = wire = false; applyShading(); };
+B('bAlb').onclick  = () => { albedoOnly = !albedoOnly; applyShading(); };
+B('bNorm').onclick = () => { normalOff = !normalOff; applyShading(); };
+B('bWire').onclick = () => { wire = !wire; applyShading(); };
+
+B('env').oninput = e => { scene.environmentIntensity = +e.target.value; B('envv').textContent = (+e.target.value).toFixed(2); };
+B('key').oninput = e => { key.intensity = +e.target.value; B('keyv').textContent = (+e.target.value).toFixed(1); };
+B('sh').oninput  = e => { if (skinMat) skinMat.sheen = +e.target.value; B('shv').textContent = (+e.target.value).toFixed(2); };
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize();
+
+let frames = 0, last = performance.now();
+renderer.setAnimationLoop(() => {
+  controls.update(); renderer.render(scene, camera);
+  if (++frames >= 30) {
+    const now = performance.now();
+    document.getElementById('fps').textContent = (frames * 1000 / (now - last)).toFixed(0);
+    frames = 0; last = now;
+  }
+});
+</script>
