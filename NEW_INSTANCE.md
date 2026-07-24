@@ -123,12 +123,52 @@ base OBJ → textured GLB → posed walk all reproduced correctly, so a fresh cl
 genuinely sufficient. One first-run cost: `anny` rebuilds a model cache into `~/.cache/anny/v1/`
 (a few minutes) the first time any script imports it.
 
-## 5. Disk hygiene (why we moved)
+## 5. Disk sizing (why the old box died — and how much you actually need)
 
-The old box died at 32 GB. The hogs were `/root/.cache` (**20 GB** — pip/HF/playwright), `/root/blender`
-(1.3 GB), `dataset/gsplat_out/tandt_db.zip` (399 MB, a public benchmark download that is not used by
-anything current). Budget **≥ 200 GB** on the new box and set `HF_HOME` / `PIP_CACHE_DIR` onto the big
-volume before installing anything.
+The old box (Vast.ai, 32 GB instance disk) filled up like this, and it is almost entirely two items:
+
+```
+/opt/conda   (base image + torch/CUDA/triton)   14 GB
+HF cache     (Qwen3-8B alone = 16 GB)           18 GB
+                                                -----
+                                                32 GB   = the whole disk
+```
+
+The repo itself is **1.2 GB** and was never the problem.
+
+**The MVP does not need Qwen3-8B or Kimodo (17 GB of that cache).** They are only for generating *new*
+text→motion. `pose_default_walk.py` / `dress_walk.py` need **`nvidia/soma-x` (827 MB)** to pose Anny;
+the walk itself is already generated and committed as `kimodo_out/walk.npz` (978 KB). `export_skin_glb.py`
+and the viewer need neither.
+
+| MVP footprint | GB |
+|---|--:|
+| `/opt/conda` base image | 14 |
+| anny cache (`~/.cache/anny`, auto-built on first import) | 1.6 |
+| Blender 4.2.5 + MPFB2 | 1.3 |
+| HF: `soma-x` only | 0.8 |
+| repo incl. `assets_src/` | 0.8 |
+| playwright + chromium | 0.4 |
+| **subtotal** | **~19** |
+| working room (renders, GLBs, `mpfb_out/`, one splat capture) | 5–10 |
+
+**Rent 64 GB** (~$6–10/month at Vast's ~$0.10–0.15/GB/month). 100 GB if you also want Qwen3-8B resident
+for fresh motion generation. **Do not** buy a Vast *volume*: volumes are physically pinned to one machine,
+which blocks GPU shopping, and the only thing worth persisting is `assets_src/` (343 MB) — small enough for
+object storage or a GitHub release.
+
+⚠️ Vast bills instance storage **whether the instance is running or stopped** — only destroying it stops the
+charge. Disk size is chosen on the rental slider; assume it is **not** resizable afterwards (unverified —
+Vast's disk-space doc 404s), so pick the size deliberately.
+
+Set the caches somewhere visible before installing anything:
+```bash
+export HF_HOME=/workspace/.cache/huggingface
+export PIP_CACHE_DIR=/workspace/.cache/pip
+```
+
+Reclaimable at any time: `models--Qwen--Qwen3-8B` (16 GB, re-pullable) and
+`dataset/gsplat_out/tandt_db.zip` (399 MB, a public benchmark not used by anything current).
 
 ## 6. Open threads to pick up
 
